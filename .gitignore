@@ -20,6 +20,9 @@ references/
 # Notebook
 .ipynb_checkpoints/
 
+# 数据库文件（运行时生成）
+*.db
+
 # OS
 .DS_Store
 Thumbs.db
