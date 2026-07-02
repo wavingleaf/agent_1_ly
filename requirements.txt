@@ -1,0 +1,8 @@
+langchain>=1.0.0
+langchain-openai
+langchain-community
+langgraph>=0.2.70
+fastapi>=0.115
+uvicorn[standard]
+python-dotenv
+pydantic-settings
