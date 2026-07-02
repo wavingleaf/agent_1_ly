@@ -1,63 +1,125 @@
 """
-Agent 编排核心 — 第一版（create_agent 方式）
+Agent 编排核心 — 第二版（手写 StateGraph）
 
-这是最简单的 Agent 创建方式：用 LangChain v1.0 的 create_agent()
-一行代码创建具备工具调用能力的 Agent。
+这一版不依赖 create_agent() 的"魔法"，而是手动组装 ReAct 循环，
+让你看清 Agent 的底层工作原理。
 
-工作原理（隐藏在 create_agent 内部）：
-1. 用户输入 → LLM 推理
-2. LLM 决定"我需要调用工具 X，参数为 Y"
-3. 框架执行工具 X(Y)，把结果返回给 LLM
-4. LLM 基于工具结果给出最终回答
-5. 如果 LLM 觉得还需要更多信息，回到步骤 2
+ReAct 循环 = 两个节点 + 一条条件边：
 
-这个循环就是著名的 ReAct（Reasoning + Acting）模式。
+    ┌──────────┐   有tool_calls   ┌──────────┐
+    │  agent   │ ─────────────────→ │  tools   │
+    │ (调LLM)  │ ←───────────────── │ (执行工具) │
+    └────┬─────┘   返回结果         └──────────┘
+         │ 无tool_calls
+         ↓
+       END
 
-create_agent() 底层实际运行在 LangGraph 的 StateGraph 上，
-所以它天然支持 checkpoint、streaming、human-in-the-loop 等高级特性。
+每次循环：
+1. LLM 收到消息 → 推理 → 决定"调用工具 X" 或 "直接回答"
+2. 如果决定调工具 → tools 节点执行 → 结果追加到消息列表 → 回到 1
+3. 如果直接回答 → 结束
+
+这种手动方式让你能：
+- 自定义节点逻辑（不只调 LLM，可以加自己的处理）
+- 添加更多节点（审查、审核、重试）
+- 精确控制状态流转
 """
 
-from langchain.agents import create_agent
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_openai import ChatOpenAI
 
+from .state import AgentState
 from ..config.settings import settings
 from ..tools.builtin import ALL_TOOLS
 
 
-def build_agent():
+def build_graph():
     """
-    构建 Agent 实例。
+    手动构建 ReAct StateGraph。
 
-    返回的 agent 是一个编译好的 LangGraph StateGraph，
-    可以直接调用 .invoke() 或 .astream()。
+    返回编译好的 graph，可调用 .invoke() 和 .astream()。
     """
-    # 第一步：初始化模型
-    # LangChain v1.0 中，ChatModel 统一了所有 LLM 的调用方式
+
+    # ==================================================================
+    # 第 1 步：初始化 LLM（绑定工具）
+    # ==================================================================
+    # bind_tools() 的作用：告诉 LLM "你有这些工具可用"
+    # LLM 在推理时会根据 user prompt 自动决定是否需要调用工具
+    # 如果需要，AIMessage 会包含 tool_calls 字段
     llm_kwargs = {
         "model": settings.MODEL_NAME,
         "api_key": settings.OPENAI_API_KEY,
     }
-    # 如果配置了自定义 API 地址（中转/代理），加入 base_url
     if settings.OPENAI_BASE_URL:
         llm_kwargs["base_url"] = settings.OPENAI_BASE_URL
 
     model = ChatOpenAI(**llm_kwargs)
+    # 关键：将工具绑定到模型上
+    llm_with_tools = model.bind_tools(ALL_TOOLS)
 
-    # 第二步：用 create_agent() 创建 Agent
-    # 参数说明：
-    #   model          - LLM 实例（支持任何 LangChain ChatModel）
-    #   tools          - 工具列表，LLM 自主决定何时调用哪个工具
-    #   system_prompt  - 系统提示词，定义 Agent 的角色和行为规范
-    agent = create_agent(
-        model=model,
-        tools=ALL_TOOLS,
-        system_prompt="你是一个有用的助手。当用户询问时间或数学计算时，请使用提供的工具。回答使用中文。",
+    # ==================================================================
+    # 第 2 步：定义节点函数
+    # ==================================================================
+    # 节点函数签名：fn(state: AgentState) → dict（返回部分状态更新）
+    # 返回的 dict 会用 AgentState 中定义的 reducer 合并到全局 state
+
+    def agent_node(state: AgentState) -> dict:
+        """
+        Agent 节点：调用 LLM 进行推理。
+
+        输入 state.messages（完整的对话历史）
+        输出 {"messages": [AIMessage]}，可能包含 tool_calls
+        """
+        response = llm_with_tools.invoke(state["messages"])
+        # 返回 dict 格式 —— LangGraph 会自动用 add_messages 合并
+        return {"messages": [response]}
+
+    # ToolNode 是 LangGraph 预置的工具执行节点
+    # 它自动识别 AIMessage 中的 tool_calls，逐个执行并将结果打包为 ToolMessage
+    tool_node = ToolNode(ALL_TOOLS)
+
+    # ==================================================================
+    # 第 3 步：组装 StateGraph
+    # ==================================================================
+    workflow = StateGraph(AgentState)
+
+    # 注册节点
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+
+    # 设置入口：用户输入从 agent 节点开始
+    workflow.set_entry_point("agent")
+
+    # 添加条件边：agent 节点执行完后 →
+    #   - 如果 AIMessage 包含 tool_calls → 去 tools 节点
+    #   - 否则 → END
+    # tools_condition 是 LangGraph 内置的路由函数，阅读 AIMessage 做判断
+    workflow.add_conditional_edges(
+        "agent",
+        tools_condition,
+        {
+            "tools": "tools",  # tools_condition 返回 "tools" → 去 tools 节点
+            "__end__": END,    # tools_condition 返回 "__end__" → 结束
+        },
     )
 
-    return agent
+    # 添加普通边：tools 节点执行完 → 回 agent 节点
+    # 这形成了循环：agent → tools → agent → tools → ... → agent → END
+    workflow.add_edge("tools", "agent")
+
+    # ==================================================================
+    # 第 4 步：添加 Checkpointer（持久化状态）
+    # ==================================================================
+    # MemorySaver 把状态保存在内存中，进程重启后丢失
+    # 用于开发调试；生产环境用 SqliteSaver 或 PostgresSaver
+    checkpointer = MemorySaver()
+
+    # 编译 —— 把"蓝图"变成可执行的 graph
+    # interrupt_before 为 None 表示不自动暂停
+    return workflow.compile(checkpointer=checkpointer)
 
 
-# 模块级全局实例 —— 其他模块直接从此处 import
-# 注意：这在生产环境不是最佳实践（应用启动前就要有 API key），
-# 但学习阶段这样写简单清晰。
-agent = build_agent()
+# 模块级全局实例
+graph = build_graph()
