@@ -1,8 +1,10 @@
 """
-Agent 编排核心 — 第二版（手写 StateGraph）
+Agent 编排核心
 
-这一版不依赖 create_agent() 的"魔法"，而是手动组装 ReAct 循环，
-让你看清 Agent 的底层工作原理。
+提供两种构建方式：
+1. build_graph()          — 手写 StateGraph（v2，教学用），完全掌控每个节点
+2. build_agent_with_middleware() — 用 create_agent() + 中间件（v3，推荐），
+   兼顾简洁与可扩展性
 
 ReAct 循环 = 两个节点 + 一条条件边：
 
@@ -18,19 +20,16 @@ ReAct 循环 = 两个节点 + 一条条件边：
 1. LLM 收到消息 → 推理 → 决定"调用工具 X" 或 "直接回答"
 2. 如果决定调工具 → tools 节点执行 → 结果追加到消息列表 → 回到 1
 3. 如果直接回答 → 结束
-
-这种手动方式让你能：
-- 自定义节点逻辑（不只调 LLM，可以加自己的处理）
-- 添加更多节点（审查、审核、重试）
-- 精确控制状态流转
 """
 
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
 from .state import AgentState
+from .middleware import RequestLoggingMiddleware
 from ..config.settings import settings
 from ..tools.builtin import ALL_TOOLS
 
@@ -121,5 +120,45 @@ def build_graph():
     return workflow.compile(checkpointer=checkpointer)
 
 
+def build_agent_with_middleware():
+    """
+    用 create_agent() + 中间件构建 Agent（v3，推荐方式）
+
+    与 build_graph() 的手写方式不同，这里用 create_agent() 的简洁 API，
+    通过中间件注入自定义逻辑，实现"核心逻辑不变，外围功能可插拔"。
+
+    中间件的优势：
+    - 不修改核心 agent 代码即可加日志/监控/权限/PII脱敏
+    - 多个中间件可以组合（顺序很重要，先添加的先执行）
+    - 官方提供了多个开箱即用的中间件
+    """
+    llm_kwargs = {
+        "model": settings.MODEL_NAME,
+        "api_key": settings.OPENAI_API_KEY,
+    }
+    if settings.OPENAI_BASE_URL:
+        llm_kwargs["base_url"] = settings.OPENAI_BASE_URL
+
+    model = ChatOpenAI(**llm_kwargs)
+
+    agent = create_agent(
+        model=model,
+        tools=ALL_TOOLS,
+        system_prompt="你是一个有用的助手。当用户询问时间或数学计算时，请使用提供的工具。回答使用中文。",
+        # 中间件按列表顺序执行 —— 先添加的先包裹（洋葱模型）
+        middleware=[
+            RequestLoggingMiddleware(),
+        ],
+    )
+
+    return agent
+
+
+# ======================================================================
 # 模块级全局实例
+# ======================================================================
+# v2: 手写 StateGraph（教学用，可控性强）
 graph = build_graph()
+
+# v3: create_agent() + 中间件（推荐生产使用）
+agent_with_middleware = build_agent_with_middleware()
