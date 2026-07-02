@@ -24,7 +24,6 @@ ReAct 循环 = 两个节点 + 一条条件边：
 
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.checkpoint.memory import MemorySaver
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
@@ -32,6 +31,7 @@ from .state import AgentState
 from .middleware import RequestLoggingMiddleware
 from ..config.settings import settings
 from ..tools.builtin import ALL_TOOLS
+from ..memory.store import create_checkpointer
 
 
 def build_graph():
@@ -111,12 +111,54 @@ def build_graph():
     # ==================================================================
     # 第 4 步：添加 Checkpointer（持久化状态）
     # ==================================================================
-    # MemorySaver 把状态保存在内存中，进程重启后丢失
-    # 用于开发调试；生产环境用 SqliteSaver 或 PostgresSaver
-    checkpointer = MemorySaver()
+    # create_checkpointer("memory") — 内存存储，进程重启后丢失（开发用）
+    # create_checkpointer("sqlite") — 磁盘存储，进程重启后保留（生产用）
+    checkpointer = create_checkpointer("memory")
 
     # 编译 —— 把"蓝图"变成可执行的 graph
     # interrupt_before 为 None 表示不自动暂停
+    return workflow.compile(checkpointer=checkpointer)
+
+
+def build_graph_with_persistence():
+    """
+    手动构建 ReAct StateGraph + SQLite 持久化（v2-prod 版）
+
+    与 build_graph() 的区别仅在于 checkpointer：
+    - MemorySaver → SqliteSaver
+    - 进程重启后对话历史不丢失
+    - 适合部署到单机服务器
+    """
+    llm_kwargs = {
+        "model": settings.MODEL_NAME,
+        "api_key": settings.OPENAI_API_KEY,
+    }
+    if settings.OPENAI_BASE_URL:
+        llm_kwargs["base_url"] = settings.OPENAI_BASE_URL
+
+    model = ChatOpenAI(**llm_kwargs)
+    llm_with_tools = model.bind_tools(ALL_TOOLS)
+
+    def agent_node(state: AgentState) -> dict:
+        response = llm_with_tools.invoke(state["messages"])
+        return {"messages": [response]}
+
+    tool_node = ToolNode(ALL_TOOLS)
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges(
+        "agent",
+        tools_condition,
+        {"tools": "tools", "__end__": END},
+    )
+    workflow.add_edge("tools", "agent")
+
+    # 关键区别：用 SQLite 替代 Memory
+    # AsyncSqliteSaver 支持异步场景（FastAPI 的 astream() 需要）
+    checkpointer = create_checkpointer("sqlite")
     return workflow.compile(checkpointer=checkpointer)
 
 
@@ -157,8 +199,11 @@ def build_agent_with_middleware():
 # ======================================================================
 # 模块级全局实例
 # ======================================================================
-# v2: 手写 StateGraph（教学用，可控性强）
+# v2: 手写 StateGraph + MemorySaver（教学/开发用）
 graph = build_graph()
 
-# v3: create_agent() + 中间件（推荐生产使用）
+# v2-prod: 手写 StateGraph + SqliteSaver（生产用，进程重启后保留记忆）
+graph_persistent = build_graph_with_persistence()
+
+# v3: create_agent() + 中间件（快速原型）
 agent_with_middleware = build_agent_with_middleware()

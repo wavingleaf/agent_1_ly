@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .agent.graph import graph  # 手写 StateGraph（带 checkpointer）
+from .agent.graph import graph_persistent  # SqliteSaver：进程重启后保留记忆
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -99,7 +99,7 @@ async def chat_stream(req: ChatRequest):
         )
 
         try:
-            async for event in graph.astream(
+            async for event in graph_persistent.astream(
                 {"messages": [{"role": "user", "content": req.message}]},
                 config=config,
                 stream_mode=["updates", "messages"],
@@ -136,7 +136,7 @@ async def chat(req: ChatRequest):
     """
     config = {"configurable": {"thread_id": req.thread_id}}
 
-    result = graph.invoke(
+    result = graph_persistent.invoke(
         {"messages": [{"role": "user", "content": req.message}]},
         config=config,
     )
