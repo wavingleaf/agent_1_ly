@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Debug — agent_langchain_1_ly</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;
+  --accent:#58a6ff;--green:#3fb950;--orange:#d2991d;--purple:#a371f7;--red:#f85149;--cyan:#39d353}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex}
+#chat{width:56%;display:flex;flex-direction:column;border-right:1px solid var(--border)}
+#chat-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+#chat-header h2{font-size:1.1em}
+#chat-header .badge{font-size:0.75em;padding:3px 10px;border-radius:12px;border:1px solid var(--accent);color:var(--accent)}
+#messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:90%;padding:12px 16px;border-radius:12px;font-size:0.9em;line-height:1.55;animation:fadeIn .25s}
+.msg.human{align-self:flex-end;background:#1a3a2a;border:1px solid rgba(63,185,80,.3)}
+.msg.ai{align-self:flex-start;background:#1a2a3c;border:1px solid rgba(88,166,255,.3)}
+.msg.tool{align-self:flex-start;background:#1a1a2a;border:1px solid rgba(163,113,247,.3);font-size:0.82em;font-family:'SF Mono',Consolas,monospace}
+.msg .label{font-size:0.75em;font-weight:700;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.msg.human .label{color:var(--green)} .msg.ai .label{color:var(--accent)} .msg.tool .label{color:var(--purple)}
+#input-area{padding:14px 20px;border-top:1px solid var(--border);display:flex;gap:10px}
+#input-area input{flex:1;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:0.95em;outline:none}
+#input-area input:focus{border-color:var(--accent)}
+#input-area button{padding:12px 22px;background:var(--accent);border:none;border-radius:10px;color:#000;font-weight:700;cursor:pointer;font-size:0.95em}
+#input-area button:hover{opacity:.85}#input-area button:disabled{opacity:.3}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+#debug{width:44%;display:flex;flex-direction:column;overflow:hidden}
+#debug-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
+#debug-header h2{font-size:1.1em}
+#debug-scroll{flex:1;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+#graph-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;overflow:hidden;flex-shrink:0}
+#graph-card .graph-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+#graph-card h3{font-size:0.82em;color:var(--muted)}
+#graph-card .zoom-btns{display:flex;gap:3px}
+#graph-card .zoom-btns button{width:26px;height:26px;border:1px solid var(--border);border-radius:5px;background:var(--card);color:var(--text);cursor:pointer;font-size:0.95em;font-weight:700;display:flex;align-items:center;justify-content:center;transition:.12s}
+#graph-card .zoom-btns button:hover{background:#21262d;border-color:var(--accent)}
+#graph-card .toggles{display:flex;align-items:center;gap:8px}
+#graph-card .toggles label{font-size:0.7em;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+#graph-card .toggles label input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
+#graph-canvas-wrap{position:relative;background:var(--bg);border-radius:6px;border:1px solid rgba(255,255,255,0.05);cursor:grab;height:220px}
+#graph-canvas-wrap:active{cursor:grabbing}
+#graph-canvas-wrap canvas{display:block}
+#resize-handle{height:8px;background:var(--border);cursor:ns-resize;border-radius:4px;flex-shrink:0;margin:2px 0;transition:background .15s}
+#resize-handle:hover{background:var(--accent)}
+#stats{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px;display:flex;gap:16px;font-size:0.75em;flex-shrink:0}
+#stats .stat{display:flex;flex-direction:column}
+#stats .stat .val{font-size:1.25em;font-weight:800;color:var(--accent)}
+#stats .stat .lbl{color:var(--muted);font-size:0.82em}
+#steps-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;flex:1;min-height:0;display:flex;overflow:hidden}
+#steps-left{width:55%;overflow-y:auto;border-right:1px solid var(--border);display:flex;flex-direction:column}
+#steps-left .tl-hdr{padding:8px 12px 4px;font-size:0.82em;color:var(--muted);flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.04)}
+#steps-right{flex:1;overflow-y:auto;display:flex;flex-direction:column;padding:4px 0}
+#steps-right .info-placeholder{color:var(--muted);font-size:0.78em;padding:20px;text-align:center}
+.tl-step{display:flex;gap:8px;padding:7px 12px;font-size:0.78em;align-items:flex-start;cursor:pointer;border-radius:4px;transition:.1s;border:1px solid transparent;margin:1px 4px}
+.tl-step:hover{background:rgba(255,255,255,0.03)}
+.tl-step.selected{background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.4)}
+.tl-step.neighbor{background:rgba(255,255,255,0.015)}
+.tl-step .tl-num{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;flex-shrink:0;background:var(--bg);border:1px solid var(--border);color:var(--muted)}
+.tl-step.selected .tl-num{background:var(--accent);border-color:var(--accent);color:#000}
+.tl-step .tl-body{flex:1;line-height:1.4;min-width:0}
+.tl-step .tl-body .tl-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-item{padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.detail-item .d-key{font-size:0.72em;color:var(--muted);margin-bottom:3px}
+.detail-item .d-val{font-size:0.8em;font-family:'SF Mono',Consolas,monospace;line-height:1.5;word-break:break-all}
+.detail-item .d-val.code{color:var(--accent)} .detail-item .d-val.result{color:var(--purple)} .detail-item .d-val.text{color:var(--text)}
+#raw-events summary{font-size:0.76em;color:var(--muted);cursor:pointer;padding:4px 0}
+#raw-events pre{font-size:0.68em;color:var(--muted);max-height:140px;overflow-y:auto;margin-top:4px;padding:6px;background:var(--card);border-radius:4px;border:1px solid var(--border);white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body>
+
+<div id="chat">
+  <div id="chat-header"><h2>Agent Chat</h2><span class="badge">deepseek-chat</span><span style="font-size:0.78em;color:var(--muted);margin-left:auto" id="thread-label">thread: -</span></div>
+  <div id="messages"><div style="text-align:center;color:var(--muted);padding:40px;font-size:0.9em">输入一个问题试试<br>例如"现在几点？"或"帮我算 123*456"</div></div>
+  <div id="input-area"><input id="user-input" placeholder="输入消息..." onkeydown="if(event.key==='Enter')send()"><button id="send-btn" onclick="send()">发送</button></div>
+</div>
+
+<div id="debug">
+  <div id="debug-header"><h2>ReAct 过程追踪</h2><span style="font-size:0.7em;color:var(--muted)">拖拽分割条调整区域</span></div>
+  <div id="debug-scroll">
+    <div id="graph-card">
+      <div class="graph-top">
+        <h3>StateGraph 节点流转</h3>
+        <div class="toggles">
+          <label title="显示上一步的边和出发节点"><input type="checkbox" id="toggle-prev" checked onchange="setTimeout(redraw,50)"> 显示上步</label>
+          <label title="显示下一步的边和到达节点"><input type="checkbox" id="toggle-next" checked onchange="setTimeout(redraw,50)"> 显示下步</label>
+        </div>
+        <div class="zoom-btns">
+          <button onclick="zoomGraph(1.3)" title="放大">+</button>
+          <button onclick="zoomGraph(0.7)" title="缩小">-</button>
+          <button onclick="resetView()" title="重置">⟲</button>
+        </div>
+      </div>
+      <div id="graph-canvas-wrap"><canvas id="graph-canvas"></canvas></div>
+    </div>
+    <div id="resize-handle"></div>
+    <div id="stats">
+      <div class="stat"><span class="val" id="st-cycles">0</span><span class="lbl">循环</span></div>
+      <div class="stat"><span class="val" id="st-tools">0</span><span class="lbl">工具调用</span></div>
+      <div class="stat"><span class="val" id="st-messages">0</span><span class="lbl">消息</span></div>
+      <div class="stat"><span class="val" id="st-elapsed">0ms</span><span class="lbl">耗时</span></div>
+    </div>
+    <div id="steps-panel">
+      <div id="steps-left">
+        <div class="tl-hdr">执行步骤（点击选中）</div>
+        <div id="timeline-inner" style="color:var(--muted);font-size:0.78em;padding:10px 12px">等待请求...</div>
+      </div>
+      <div id="steps-right"><div class="info-placeholder">← 点击左侧步骤查看详细信息</div></div>
+    </div>
+    <details id="raw-events"><summary>raw SSE events (0)</summary><pre id="raw-pre"></pre></details>
+  </div>
+</div>
+
+<script>
+// ================================================================
+// 节点定义 — 默认水平错开：agent 偏左，tools 偏右，end 偏左
+//   避免 agent→tools（弧线向右）与 agent→end（直线向左下）重叠
+//   用户可拖拽任意节点自定义布局
+// ================================================================
+const NODES = [
+  {id:'start', label:'START',             rx:0.50, ry:0.10, r:22, color:'#8b949e', icon:''},
+  {id:'agent', label:'agent\n(LLM 推理)', rx:0.36, ry:0.33, r:42, color:'#58a6ff', icon:'🧠'},
+  {id:'tools', label:'tools\n(执行工具)',  rx:0.64, ry:0.58, r:42, color:'#3fb950', icon:'🔧'},
+  {id:'end',   label:'END',               rx:0.36, ry:0.83, r:22, color:'#8b949e', icon:''},
+];
+function computeNodePositions(W, H) {
+  const pad = 35; const h = H - pad * 2;
+  NODES.forEach(n => { n.x = W * n.rx; n.y = pad + n.ry * h; });
+}
+const EDGES = [
+  {id:'start→agent', from:'start', to:'agent', label:'用户输入', cond:false},
+  {id:'agent→tools', from:'agent', to:'tools', label:'有 tool_calls', cond:true},
+  {id:'tools→agent', from:'tools', to:'agent', label:'返回结果', cond:false},
+  {id:'agent→end',   from:'agent', to:'end',   label:'无 tool_calls → END', cond:true},
+];
+const nodeMap = Object.fromEntries(NODES.map(n => [n.id, n]));
+const edgeMap = Object.fromEntries(EDGES.map(e => [e.id, e]));
+
+// ================================================================
+// 全局状态
+// ================================================================
+let threadId = 'web-' + Date.now();
+let msgCount = 0, toolCount = 0, cycleCount = 0, eventCount = 0, startTime = 0;
+let streamedContent = '', hadToolCall = false, rawEvents = [];
+let steps = [], selectedStep = -1;
+document.getElementById('thread-label').textContent = 'thread: ' + threadId;
+
+// ================================================================
+// Canvas 核心
+// ================================================================
+const canvas = document.getElementById('graph-canvas');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('graph-canvas-wrap');
+const view = { tx:0, ty:0, scale:1.0, dragging:false, dx:0, dy:0 };
+
+function layoutCanvas() {
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if (W < 10 || H < 10) return false;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  computeNodePositions(W, H);
+  return true;
+}
+
+// ─── 颜色（暗底高对比度）───
+// ── 颜色 ── 当前步：边绿 / 出发蓝 / 到达黄 ── 上步：边紫 / 出发暗红 ── 下步：边橙 / 到达浅红 ──
+const C_CUR_EDGE = '#3fb950';  // 绿
+const C_CUR_FROM = '#58a6ff';  // 蓝
+const C_CUR_TO   = '#e3b341';  // 黄
+const C_PREV_EDGE = '#a371f7'; // 紫
+const C_PREV_FROM = '#8b2500'; // 暗红
+const C_NEXT_EDGE = '#d2991d'; // 橙
+const C_NEXT_TO   = '#ff9999'; // 浅红
+const C_DIM = 'rgba(255,255,255,0.08)';
+function hexRgba(h,a){ const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16); return `rgba(${r},${g},${b},${a})`; }
+const TRANS_COLORS = {
+  cur_from: C_CUR_FROM, cur_to: C_CUR_TO, cur_edge: C_CUR_EDGE,
+  prev_from: C_PREV_FROM, prev_edge: C_PREV_EDGE,
+  next_to: C_NEXT_TO, next_edge: C_NEXT_EDGE,
+};
+
+// ── 从 steps 中跳过 edge==null 的步骤，找 prev/cur/next 三个 transition ──
+function getTransition(step) {
+  if (!step||!step.edge) return null;
+  const e = edgeMap[step.edge];
+  return { from: e?e.from:null, to: step.node||(e?e.to:null), edge: step.edge };
+}
+function findPrevTransition(idx) { for(let i=idx-1;i>=0;i--) if(steps[i]&&steps[i].edge) return getTransition(steps[i]); return null; }
+function findCurTransition(idx) { if(idx>=0&&idx<steps.length&&steps[idx].edge) return getTransition(steps[idx]); return null; }
+function findNextTransition(idx) { for(let i=idx+1;i<steps.length;i++) if(steps[i]&&steps[i].edge) return getTransition(steps[i]); return null; }
+
+// 收集节点的所有颜色角色（去重）
+function nodeRoles(nid) {
+  const cur=findCurTransition(selectedStep), prev=findPrevTransition(selectedStep), next=findNextTransition(selectedStep);
+  const showPrev = document.getElementById('toggle-prev').checked;
+  const showNext = document.getElementById('toggle-next').checked;
+  const roles=new Set();
+  if(cur){ if(cur.from===nid) roles.add('cur_from'); if(cur.to===nid) roles.add('cur_to'); }
+  if(showPrev&&prev&&prev.from===nid) roles.add('prev_from');
+  if(showNext&&next&&next.to===nid)   roles.add('next_to');
+  return [...roles];
+}
+
+function edgeRoleMap() {
+  const showPrev = document.getElementById('toggle-prev').checked;
+  const showNext = document.getElementById('toggle-next').checked;
+  const cur=findCurTransition(selectedStep), prev=findPrevTransition(selectedStep), next=findNextTransition(selectedStep);
+  const m={};
+  if(cur&&cur.edge)  m[cur.edge]='cur_edge';
+  if(showPrev&&prev&&prev.edge) m[prev.edge]='prev_edge';
+  if(showNext&&next&&next.edge) m[next.edge]='next_edge';
+  return m;
+}
+
+function drawGraph() {
+  const W = canvas.width / (window.devicePixelRatio || 1), H = canvas.height / (window.devicePixelRatio || 1);
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='rgba(255,255,255,0.025)'; ctx.lineWidth=1;
+  const gs=40*view.scale;
+  for(let x=view.tx%gs;x<W;x+=gs){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=view.ty%gs;y<H;y+=gs){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  const tx=x=>x*view.scale+view.tx, ty=y=>y*view.scale+view.ty;
+  const erMap=edgeRoleMap();
+
+  // ── 边 ──
+  EDGES.forEach(e=>{
+    const f=nodeMap[e.from], t=nodeMap[e.to];
+    if(!f||!t)return;
+    const x1=tx(f.x),y1=ty(f.y),x2=tx(t.x),y2=ty(t.y);
+    const role=erMap[e.id];
+    const color=role?TRANS_COLORS[role]:C_DIM;
+    const lw=role?(role==='cur_edge'?3.5:2.6):1.1;
+    ctx.strokeStyle=color; ctx.lineWidth=lw;
+    ctx.setLineDash(e.cond?[7,5]:[]);
+    if((e.from==='agent'&&e.to==='tools')||(e.from==='tools'&&e.to==='agent')){
+      const ox=(e.from==='agent'?55:-55)*view.scale, mx=(x1+x2)/2+ox;
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.quadraticCurveTo(mx,(y1+y2)/2,x2,y2);ctx.stroke();
+      if(role) drawArrow(mx,(y1+y2)/2,x2,y2,color);
+    }else{ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();if(role)drawArrow((x1+x2)/2,(y1+y2)/2,x2,y2,color);}
+    ctx.setLineDash([]);
+    if(role&&e.label){
+      let lx,ly;
+      if(e.from==='agent'&&e.to==='tools'){lx=tx(f.x+75);ly=(ty(f.y)+ty(t.y))/2}
+      else if(e.from==='tools'&&e.to==='agent'){lx=tx(f.x-80);ly=(ty(f.y)+ty(t.y))/2}
+      else{lx=(x1+x2)/2+18;ly=(y1+y2)/2-6}
+      ctx.fillStyle=color;ctx.font=`${Math.round(10*view.scale)}px "Microsoft YaHei",sans-serif`;ctx.textAlign='center';ctx.fillText(e.label,lx,ly);
+    }
+  });
+
+  // ── 节点（N个角色→N段扇形边框，不混色）──
+  NODES.forEach(n=>{
+    const x=tx(n.x),y=ty(n.y),r=n.r*view.scale;
+    const roles=nodeRoles(n.id);
+    if(!roles.length){
+      ctx.fillStyle='rgba(13,17,23,0.85)';ctx.strokeStyle='rgba(255,255,255,0.12)';ctx.lineWidth=1.2;
+      ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.stroke();
+    }else{
+      const count=roles.length, seg=2*Math.PI/count;
+      let fillRole=null;
+      for(const ro of ['cur_from','cur_to','prev_from','next_to']){
+        if(roles.includes(ro)){fillRole=ro;break;}
+      }
+      ctx.fillStyle=fillRole?hexRgba(TRANS_COLORS[fillRole],0.22):'rgba(13,17,23,0.85)';
+      ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+      ctx.lineWidth=3;
+      for(let i=0;i<count;i++){
+        ctx.strokeStyle=TRANS_COLORS[roles[i]];
+        ctx.beginPath();
+        ctx.arc(x,y,r,-Math.PI/2+i*seg,-Math.PI/2+(i+1)*seg);
+        ctx.stroke();
+      }
+      const glow=TRANS_COLORS[roles[0]];
+      const grd=ctx.createRadialGradient(x,y,r*0.5,x,y,r*1.7);
+      grd.addColorStop(0,hexRgba(glow,0.18));grd.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=grd;ctx.beginPath();ctx.arc(x,y,r*1.7,0,Math.PI*2);ctx.fill();
+    }
+    if(n.icon&&n.r>24){ctx.fillStyle='#fff';ctx.font=`${Math.round(17*view.scale)}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(n.icon,x,y-r*0.18);}
+    const lines=n.label.split('\n');
+    const fs=Math.round((n.r>35?11:10)*view.scale);
+    ctx.font=`bold ${fs}px "Microsoft YaHei",sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    const alpha=roles.length||selectedStep<0?1:0.3;
+    if(lines.length===1){ctx.fillStyle=`rgba(255,255,255,${alpha})`;ctx.fillText(lines[0],x,y+3)}
+    else{ctx.fillStyle=`rgba(255,255,255,${alpha})`;ctx.fillText(lines[0],x,y-8);ctx.font=`${Math.round(fs*0.8)}px "Microsoft YaHei",sans-serif`;ctx.fillStyle=`rgba(200,200,200,${alpha})`;ctx.fillText(lines[1],x,y+9)}
+  });
+
+  // ── 循环标记 ──
+  if(Object.keys(erMap).length>0){const lx=tx(nodeMap.agent.x+100),ly=ty(nodeMap.agent.y+65);ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font=`bold ${Math.round(10*view.scale)}px "Microsoft YaHei",sans-serif`;ctx.textAlign='left';ctx.fillText('loop x'+toolCount,lx,ly);}
+
+  // ── 图例 ──
+  if(selectedStep>=0){
+    const ly0=H-48;
+    const showPrev=document.getElementById('toggle-prev').checked, showNext=document.getElementById('toggle-next').checked;
+    const items=[];
+    if(showPrev){items.push({c:C_PREV_FROM,t:'上出发(暗红)'},{c:C_PREV_EDGE,t:'上边(紫)'});}
+    items.push({c:C_CUR_FROM,t:'当出发(蓝)'},{c:C_CUR_EDGE,t:'当边(绿)'},{c:C_CUR_TO,t:'当到达(黄)'});
+    if(showNext){items.push({c:C_NEXT_EDGE,t:'下边(橙)'},{c:C_NEXT_TO,t:'下到达(浅红)'});}
+    ctx.font='9px "Microsoft YaHei",sans-serif';let lx=10;
+    items.forEach(item=>{const w=ctx.measureText(item.t).width+22;ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(lx,ly0,w,16);ctx.fillStyle=item.c;ctx.beginPath();ctx.arc(lx+7,ly0+8,3.5,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ccc';ctx.textAlign='left';ctx.fillText(item.t,lx+16,ly0+11);lx+=w+6;});
+  }
+}
+
+function drawArrow(x1,y1,x2,y2,color){const a=Math.atan2(y2-y1,x2-x1),s=7*view.scale;ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-s*Math.cos(a-Math.PI/6),y2-s*Math.sin(a-Math.PI/6));ctx.lineTo(x2-s*Math.cos(a+Math.PI/6),y2-s*Math.sin(a+Math.PI/6));ctx.closePath();ctx.fill();}
+
+
+
+function redraw() {
+  if (!layoutCanvas()) return;
+  try { drawGraph(); } catch (e) {}
+}
+
+// ─── 缩放/平移/节点拖拽 ───
+function zoomGraph(f) { view.scale = Math.max(0.35, Math.min(3, view.scale * f)); redraw(); }
+function resetView() { view.tx = 0; view.ty = 0; view.scale = 1; computeNodePositions(canvas.width / (devicePixelRatio || 1), canvas.height / (devicePixelRatio || 1)); redraw(); }
+
+let dragNode = null;
+function hitNode(mx, my) {
+  const lx = (mx - view.tx) / view.scale, ly = (my - view.ty) / view.scale;
+  for (let i = NODES.length - 1; i >= 0; i--) { const n = NODES[i]; if (Math.hypot(lx - n.x, ly - n.y) < n.r + 8) return n; }
+  return null;
+}
+canvas.addEventListener('mousedown', e => {
+  const n = hitNode(e.offsetX, e.offsetY);
+  if (n) { dragNode = n; canvas.style.cursor = 'grabbing'; e.preventDefault(); return; }
+  view.dragging = true; view.dx = e.offsetX - view.tx; view.dy = e.offsetY - view.ty;
+});
+window.addEventListener('mousemove', e => {
+  if (dragNode) { dragNode.x = (e.offsetX - view.tx) / view.scale; dragNode.y = (e.offsetY - view.ty) / view.scale; redraw(); return; }
+  if (!view.dragging) return;
+  view.tx = e.offsetX - view.dx; view.ty = e.offsetY - view.dy;
+  if (wrap.contains(e.target)) redraw();
+});
+window.addEventListener('mouseup', () => { view.dragging = false; dragNode = null; canvas.style.cursor = 'grab'; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const mx = e.offsetX, my = e.offsetY, f = e.deltaY < 0 ? 1.15 : 0.87;
+  const ns = Math.max(0.35, Math.min(3, view.scale * f));
+  view.tx = mx - (mx - view.tx) * ns / view.scale;
+  view.ty = my - (my - view.ty) * ns / view.scale;
+  view.scale = ns;
+  redraw();
+}, { passive: false });
+
+// ─── 拖拽分割条 ───
+let resizeActive = false, resizeStartH = 0;
+const handle = document.getElementById('resize-handle');
+const graphWrapEl = document.getElementById('graph-canvas-wrap');
+handle.addEventListener('mousedown', e => { resizeActive = true; resizeStartH = graphWrapEl.clientHeight - e.clientY; e.preventDefault(); });
+window.addEventListener('mousemove', e => {
+  if (!resizeActive) return;
+  graphWrapEl.style.height = Math.max(80, Math.min(500, resizeStartH + e.clientY)) + 'px';
+  clearTimeout(handle._timer); handle._timer = setTimeout(redraw, 50);
+});
+window.addEventListener('mouseup', () => { resizeActive = false; });
+
+// ─── 初始化 ───
+window.addEventListener('resize', () => { clearTimeout(handle._rtimer); handle._rtimer = setTimeout(redraw, 100); });
+new ResizeObserver(() => { clearTimeout(handle._otimer); handle._otimer = setTimeout(redraw, 100); }).observe(wrap);
+setTimeout(redraw, 200);
+
+// ================================================================
+// 发送 & SSE 处理
+// ================================================================
+async function send() {
+  const input = document.getElementById('user-input'), btn = document.getElementById('send-btn');
+  const text = input.value.trim(); if (!text) return;
+  input.value = ''; input.disabled = true; btn.disabled = true;
+  startTime = performance.now();
+  toolCount = 0; cycleCount = 0; eventCount = 0; msgCount = 0;
+  streamedContent = ''; hadToolCall = false; rawEvents = []; steps = []; selectedStep = -1;
+  resetDebug();
+  addMsg('human', text);
+  const aiBubble = addMsg('ai', ''); aiBubble._placeholder = true;
+  addStep('input', 'start', null, '用户输入', text.substring(0, 80));
+  try {
+    const resp = await fetch('/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, thread_id: threadId }) });
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const p = line.slice(6); if (p === '[DONE]') { onDone(aiBubble); break; }
+        try { const e = JSON.parse(p); rawEvents.push(e); processEvent(e, aiBubble); eventCount++; } catch (x) { rawEvents.push({ _parse: String(x).substring(0, 60) }); eventCount++; }
+      }
+    }
+  } catch (e) { aiBubble.querySelector('.content').textContent = '[error] ' + e.message; }
+  input.disabled = false; btn.disabled = false; input.focus();
+  updStats(); updRaw();
+}
+
+function processEvent(event, aiBubble) {
+  if (!Array.isArray(event) || event.length < 2) return;
+  const [mode, payload] = event;
+  if (mode === 'messages') { const m = Array.isArray(payload) ? payload[0] : payload; streamedContent += (m && m.content) || ''; if (aiBubble._placeholder) aiBubble.querySelector('.content').textContent = streamedContent; updStats(); return; }
+  if (mode === 'updates') {
+    for (const [, update] of Object.entries(payload)) {
+      if (!update.messages) continue;
+      for (const msg of update.messages) {
+        const role = msg.type || '', content = msg.content || '';
+        if (role === 'ai') {
+          if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+            hadToolCall = true;
+            for (const tc of msg.tool_calls) {
+            toolCount++; cycleCount++;
+            // edge 规则：每步的 edge = 刚刚走过哪条边到达当前节点。
+            // 如果之前已经有过工具调用 → 我们是刚从 tools 沿 tools→agent 回来的；
+            // 如果这是第一次 agent 推理 → 我们还停留在 agent 节点，没有新的边穿过。
+            const arrivedVia = hadToolCall ? 'tools→agent' : null;
+            addStep('agent_thinking', 'agent', arrivedVia, 'LLM 调用工具', `${tc.name}(${JSON.stringify(tc.args)})`, { toolName: tc.name, toolArgs: tc.args });
+          }
+          } else if (content) {
+            if (aiBubble._placeholder) { const el = aiBubble.querySelector('.content'); if (el && (!streamedContent || content.length > streamedContent.length)) el.textContent = content; aiBubble._placeholder = false; }
+            addStep(hadToolCall ? 'agent_final' : 'agent_thinking', 'agent', hadToolCall ? 'tools→agent' : null, hadToolCall ? 'LLM 综合工具结果，最终回答' : 'LLM 直接回答', content.substring(0, 100), { aiContent: content });
+          }
+        } else if (role === 'tool') {
+          const td = document.createElement('div'); td.className = 'msg tool';
+          td.innerHTML = `<div class="label">[tool] ${msg.name || 'tool'}</div><div>${escHtml(String(content).substring(0, 400))}</div>`;
+          document.getElementById('messages').appendChild(td); document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+          addStep('tool_exec', 'tools', 'agent→tools', '工具执行完毕', (msg.name || 'tool') + ': ' + String(content).substring(0, 60), { toolName: msg.name, toolResult: String(content) });
+        }
+      }
+    }
+    msgCount = document.getElementById('messages').querySelectorAll('.msg').length; updStats();
+  }
+}
+function onDone(aiBubble) {
+  if (aiBubble._placeholder && streamedContent) { aiBubble.querySelector('.content').textContent = streamedContent; aiBubble._placeholder = false; }
+  addStep('done', 'end', 'agent→end', 'END', hadToolCall ? 'tools_condition → END' : 'tools_condition → END');
+  document.getElementById('st-elapsed').textContent = Math.round(performance.now() - startTime) + 'ms';
+  updRaw(); setTimeout(redraw, 100);
+}
+
+// ================================================================
+// 步骤 & 右侧详情
+// ================================================================
+function addStep(phase, node, edge, title, detail, extra = {}) {
+  const step = { id: steps.length, phase, node, edge, title, detail,
+    icon: phase.includes('agent') ? 'agent' : phase.includes('tool') ? 'tool' : phase === 'routing' ? 'route' : 'input',
+    ...extra };
+  steps.push(step);
+  const inner = document.getElementById('timeline-inner');
+  if (inner.querySelector('.no-steps')) inner.innerHTML = '';
+  const div = document.createElement('div'); div.className = 'tl-step'; div.id = 'tl-' + step.id;
+  div.innerHTML = `<div class="tl-num">${step.id + 1}</div><div class="tl-body"><div class="tl-title">${escHtml(title)}</div></div>`;
+  div.onclick = () => selectStep(step.id);
+  inner.appendChild(div);
+  document.getElementById('debug-scroll').scrollTop = document.getElementById('debug-scroll').scrollHeight;
+  setTimeout(redraw, 100);
+}
+
+function selectStep(idx) {
+  selectedStep = idx;
+  document.querySelectorAll('.tl-step').forEach(el => el.classList.remove('selected', 'neighbor'));
+  for (let i = Math.max(0, idx - 1); i <= Math.min(steps.length - 1, idx + 1); i++) {
+    const el = document.getElementById('tl-' + i); if (!el) continue;
+    if (i === idx) { el.classList.add('selected'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+    else el.classList.add('neighbor');
+  }
+  const right = document.getElementById('steps-right');
+  if (idx < 0 || idx >= steps.length) { right.innerHTML = '<div class="info-placeholder">← 点击左侧步骤查看详细信息</div>'; redraw(); return; }
+  const s = steps[idx];
+  const t = getTransition(s);
+  const phMap = { input: '用户输入', agent_thinking: 'LLM 推理', tool_exec: '工具执行', agent_final: 'LLM 最终回答', done: '结束' };
+  const icons = { agent: '🧠 LLM', tool: '🔧 工具', route: '🔀 路由', input: '👤 用户' };
+  let html = `<div class="detail-item"><div class="d-key">阶段</div><div class="d-val text" style="color:var(--accent)">${icons[s.icon] || ''} ${phMap[s.phase] || s.phase}（第${idx + 1}步）</div></div>`;
+  if (t) {
+    if (t.from) html += `<div class="detail-item"><div class="d-key">发起节点</div><div class="d-val code">${escHtml(t.from)}</div></div>`;
+    if (t.edge) html += `<div class="detail-item"><div class="d-key">途径边</div><div class="d-val code">${escHtml(t.edge)}</div></div>`;
+    if (t.to) html += `<div class="detail-item"><div class="d-key">到达节点</div><div class="d-val code">${escHtml(t.to)}</div></div>`;
+  }
+  if (s.toolName) html += `<div class="detail-item"><div class="d-key">调用工具</div><div class="d-val code">${escHtml(s.toolName)}(${escHtml(JSON.stringify(s.toolArgs || {}))})</div></div>`;
+  if (s.toolResult) html += `<div class="detail-item"><div class="d-key">工具返回值</div><div class="d-val result">${escHtml(s.toolResult.substring(0, 300))}</div></div>`;
+  if (s.aiContent) html += `<div class="detail-item"><div class="d-key">LLM 输出</div><div class="d-val text">${escHtml(s.aiContent.substring(0, 300))}</div></div>`;
+  right.innerHTML = html;
+  setTimeout(redraw, 100);
+}
+
+// ================================================================
+// UI 辅助
+// ================================================================
+function addMsg(role, text) { const d = document.createElement('div'); d.className = 'msg ' + role; const labels = { human: '👤 YOU', ai: '🤖 Agent', tool: '🔧 Tool' }; d.innerHTML = `<div class="label">${labels[role] || role}</div><div class="content">${escHtml(text)}</div>`; document.getElementById('messages').appendChild(d); document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight; return d; }
+function resetDebug() { document.getElementById('timeline-inner').innerHTML = '<span class="no-steps" style="color:var(--muted)">处理中...</span>'; document.getElementById('steps-right').innerHTML = '<div class="info-placeholder">← 点击左侧步骤查看详细信息</div>'; document.getElementById('raw-pre').textContent = ''; document.getElementById('st-cycles').textContent = '0'; document.getElementById('st-tools').textContent = '0'; document.getElementById('st-messages').textContent = '0'; document.getElementById('st-elapsed').textContent = '0ms'; steps = []; selectedStep = -1; setTimeout(redraw, 100); }
+function updStats() { document.getElementById('st-cycles').textContent = cycleCount; document.getElementById('st-tools').textContent = toolCount; document.getElementById('st-messages').textContent = msgCount; }
+function updRaw() { document.getElementById('raw-pre').textContent = rawEvents.map(e => JSON.stringify(e)).join('\n'); const s = document.querySelector('#raw-events summary'); if (s) s.textContent = 'raw SSE events (' + eventCount + ')'; }
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+</script>
+</body>
+</html>

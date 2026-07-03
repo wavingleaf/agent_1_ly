@@ -7,7 +7,11 @@
 依赖 pip install pydantic-settings python-dotenv
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+# 项目根目录 —— 从本文件位置向上两层（src/config/ → src/ → 项目根）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -39,7 +43,7 @@ class Settings(BaseSettings):
     SQLITE_DB_PATH: str = "checkpoints.db"
 
     model_config = {
-        "env_file": ".env",
+        "env_file": str(_PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",
     }
 

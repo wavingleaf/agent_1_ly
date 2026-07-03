@@ -22,6 +22,8 @@ references/
 
 # 数据库文件（运行时生成）
 *.db
+*.db-shm
+*.db-wal
 
 # OS
 .DS_Store

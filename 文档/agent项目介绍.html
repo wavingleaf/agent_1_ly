@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 行为模拟器 — agent_langchain_1_ly</title>
+<style>
+:root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e;
+  --accent:#58a6ff; --green:#3fb950; --orange:#d2991d; --purple:#a371f7; --red:#f85149; --cyan:#39d353;
+  --pink:#f778ba; }
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;height:100vh}
+#app{display:flex;height:100vh}
+/* 左侧画布 */
+#canvas-wrap{flex:1;position:relative;background:radial-gradient(ellipse at center,#161b22 0%,#0d1117 100%)}
+canvas{display:block}
+/* 右侧面板 */
+#panel{width:440px;background:var(--card);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.panel-section{padding:20px;border-bottom:1px solid var(--border)}
+.panel-section h3{font-size:1em;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.panel-section h3 .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot-agent{background:var(--accent)} .dot-tools{background:var(--green)} .dot-middleware{background:var(--purple)}
+.dot-sse{background:var(--pink)} .dot-checkpoint{background:var(--cyan)}
+
+.msg-log{height:280px;overflow-y:auto;font-size:0.82em;font-family:'SF Mono','Consolas',monospace;line-height:1.8}
+.msg-log .entry{padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.msg-log .entry.human{color:var(--orange)}
+.msg-log .entry.ai{color:var(--accent)}
+.msg-log .entry.tool{color:var(--green)}
+.msg-log .entry.system{color:var(--muted);font-style:italic}
+
+.controls{display:flex;gap:10px;flex-wrap:wrap}
+.btn{padding:10px 20px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);
+  cursor:pointer;font-size:0.9em;font-weight:600;transition:.15s}
+.btn:hover{background:#21262d}
+.btn:active{transform:scale(0.97)}
+.btn:disabled{opacity:0.3;cursor:not-allowed}
+.btn.play{background:var(--green);border-color:var(--green);color:#000}
+.btn.step{background:var(--accent);border-color:var(--accent);color:#000}
+.btn.reset{border-color:var(--red);color:var(--red)}
+.speed-label{font-size:0.82em;color:var(--muted);margin-top:6px}
+
+.state-row{display:flex;gap:12px;font-size:0.85em;margin-top:8px}
+.state-chip{background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;padding:6px 12px;
+  font-family:'SF Mono','Consolas',monospace;font-size:0.85em}
+.state-chip span{color:var(--muted)} .state-chip .val{color:var(--accent)}
+
+.tooltip{position:absolute;background:#1c2128;border:1px solid var(--accent);border-radius:8px;padding:12px 16px;
+  font-size:0.82em;pointer-events:none;z-index:10;max-width:280px;box-shadow:0 8px 24px rgba(0,0,0,0.5);opacity:0;transition:opacity .15s}
+.tooltip.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="canvas-wrap"><canvas id="c"></canvas></div>
+  <div id="panel">
+    <div class="panel-section">
+      <h3><span class="dot dot-agent"></span> Agent 行为模拟器</h3>
+      <p style="color:var(--muted);font-size:0.85em;line-height:1.6">
+        演示一次完整的 Agent 请求处理：<br>
+        "现在几点？1+1=？" → Agent 调用两个工具后给出最终回答。
+      </p>
+      <div class="state-row">
+        <div class="state-chip"><span>循环</span> <span class="val" id="cycle-num">0/3</span></div>
+        <div class="state-chip"><span>状态</span> <span class="val" id="phase-label">就绪</span></div>
+        <div class="state-chip"><span>消息</span> <span class="val" id="msg-count">0</span></div>
+      </div>
+      <div class="controls" style="margin-top:16px">
+        <button class="btn play" id="btn-play" onclick="togglePlay()">▶ 自动播放</button>
+        <button class="btn step" id="btn-step" onclick="stepForward()">→ 下一步</button>
+        <button class="btn reset" onclick="resetSim()">↺ 重置</button>
+      </div>
+      <div class="speed-label">速度：<input type="range" id="speed" min="1" max="5" value="2" oninput="updateSpeed(this.value)" style="vertical-align:middle"> <span id="speed-label">2×</span></div>
+    </div>
+    <div class="panel-section">
+      <h3><span class="dot dot-sse"></span> 消息流转日志</h3>
+      <div class="msg-log" id="msg-log">
+        <div class="entry system">等待用户输入...</div>
+      </div>
+    </div>
+  </div>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<script>
+// ============================================================================
+// 模拟数据 — 预定义的完整 ReAct 执行轨迹
+// ============================================================================
+const TRACE = [
+  // 阶段 0：用户发送请求
+  { phase:"input", node:null, edge:null,
+    msg:{role:"human", content:'"现在几点？顺便算一下 1+1 等于多少"'},
+    log:{role:"human",text:"👤 用户：现在几点？顺便算一下 1+1 等于多少"},
+    sse:'data: ["updates", {"messages": [{"role":"user","content":"现在几点？顺便算一下 1+1 等于多少"}]}]',
+  },
+  // 阶段 1：agent 节点 — LLM 决定调用 get_current_time
+  { phase:"before_model", node:"middleware",
+    msg:{role:"ai", tool_calls:[{name:"get_current_time",args:{}}]},
+    log:{role:"system",text:"🔍 Middleware.before_model — 消息数:1"},
+    sse:'',
+  },
+  { phase:"agent_thinking", node:"agent", edge:{from:"START",to:"agent"},
+    msg:{role:"ai", tool_calls:[{name:"get_current_time",args:{}}]},
+    log:{role:"ai",text:'🤖 Agent → 决定调用 get_current_time()'},
+    sse:'data: ["updates", {"agent": {"messages": [{"tool_calls":[{"name":"get_current_time","args":{}}]}]}}]',
+  },
+  // 阶段 2：条件路由 → tools 节点
+  { phase:"routing", node:null, edge:{from:"agent",to:"tools",condition:"有 tool_calls ✓"},
+    msg:null,
+    log:{role:"system",text:"🔀 tools_condition → 发现 tool_calls → 路由到 tools 节点"},
+    sse:'',
+  },
+  // 阶段 3：tools 节点 — 执行 get_current_time
+  { phase:"wrap_tool", node:"middleware",
+    msg:{role:"tool", name:"get_current_time", content:"2026年07月03日 15:30:00（周5）"},
+    log:{role:"system",text:"🔧 Middleware.wrap_tool_call — get_current_time()"},
+    sse:'',
+  },
+  { phase:"tool_exec", node:"tools", edge:{from:"agent",to:"tools",condition:"有 tool_calls ✓"},
+    msg:{role:"tool", name:"get_current_time", content:"2026年07月03日 15:30:00（周5）"},
+    log:{role:"tool",text:'⏰ get_current_time() → "2026年07月03日 15:30:00（周5）"'},
+    sse:'data: ["updates", {"tools": {"messages": [{"content":"2026年07月03日 15:30:00（周5）"}]}}]',
+  },
+  // 阶段 4：回到 agent — LLM 决定调用 calculator
+  { phase:"before_model", node:"middleware",
+    msg:null,
+    log:{role:"system",text:"🔍 Middleware.before_model — 消息数:3"},
+    sse:'',
+  },
+  { phase:"agent_thinking", node:"agent", edge:{from:"tools",to:"agent"},
+    msg:{role:"ai", tool_calls:[{name:"calculator",args:{expression:"1+1"}}]},
+    log:{role:"ai",text:'🤖 Agent → 看到时间结果了，现在需要计算 1+1 → 调用 calculator("1+1")'},
+    sse:'data: ["updates", {"agent": {"messages": [{"tool_calls":[{"name":"calculator","args":{"expression":"1+1"}}]}]}}]',
+  },
+  // 阶段 5：条件路由 → tools 节点（第二次）
+  { phase:"routing", node:null, edge:{from:"agent",to:"tools",condition:"有 tool_calls ✓"},
+    msg:null,
+    log:{role:"system",text:"🔀 tools_condition → 仍有 tool_calls → 再次路由到 tools 节点"},
+    sse:'',
+  },
+  // 阶段 6：tools 节点 — 执行 calculator
+  { phase:"wrap_tool", node:"middleware",
+    msg:{role:"tool", name:"calculator", content:"1+1 = 2"},
+    log:{role:"system",text:"🔧 Middleware.wrap_tool_call — calculator(expression='1+1')"},
+    sse:'',
+  },
+  { phase:"tool_exec", node:"tools", edge:{from:"agent",to:"tools",condition:"有 tool_calls ✓"},
+    msg:{role:"tool", name:"calculator", content:"1+1 = 2"},
+    log:{role:"tool",text:'🧮 calculator("1+1") → "1+1 = 2"'},
+    sse:'data: ["updates", {"tools": {"messages": [{"content":"1+1 = 2"}]}}]',
+  },
+  // 阶段 7：回到 agent — LLM 形成最终回答
+  { phase:"before_model", node:"middleware",
+    msg:null,
+    log:{role:"system",text:"🔍 Middleware.before_model — 消息数:5"},
+    sse:'',
+  },
+  { phase:"after_model", node:"middleware",
+    msg:{role:"ai", content:"现在是2026年7月3日下午3点30分。1+1等于2。"},
+    log:{role:"system",text:"📊 Middleware.after_model — 耗时0.8s，输入120 tokens，输出28 tokens"},
+    sse:'',
+  },
+  { phase:"agent_final", node:"agent", edge:{from:"tools",to:"agent"},
+    msg:{role:"ai", content:"现在是2026年7月3日下午3点30分。1+1等于2。"},
+    log:{role:"ai",text:'✅ Agent：现在是2026年7月3日下午3点30分。1+1等于2。'},
+    sse:'data: ["updates", {"agent": {"messages": [{"content":"现在是2026年7月3日下午3点30分。1+1等于2。"}]}}]',
+  },
+  // 阶段 8：条件路由 → END
+  { phase:"routing", node:null, edge:{from:"agent",to:"END",condition:"无 tool_calls → 结束"},
+    msg:null,
+    log:{role:"system",text:"🔀 tools_condition → 无 tool_calls → 路由到 END，Agent 完成"},
+    sse:'data: [DONE]',
+  },
+  // 阶段 9：checkpoint 保存
+  { phase:"checkpoint", node:"checkpoint", edge:null,
+    msg:null,
+    log:{role:"system",text:"💾 SqliteSaver → State 快照已保存（thread_id='default'）"},
+    sse:'',
+  },
+];
+
+// ============================================================================
+// 节点坐标（响应式）
+// ============================================================================
+const NODES = {
+  user:    {label:"👤 用户",   desc:"HTTP POST\n/chat/stream"},
+  agent:   {label:"🧠 Agent 节点\n(LLM 推理)", desc:"决定是否调用工具"},
+  tools:   {label:"🔧 Tools 节点\n(ToolNode)", desc:"执行工具调用"},
+  mw:      {label:"🧩 Middleware\n(日志/监控)", desc:"before_model\nafter_model\nwrap_tool_call"},
+  ckpt:    {label:"💾 Checkpoint\n(SqliteSaver)", desc:"每节点执行完\n自动保存 State"},
+  end:     {label:"✅ END\n(返回用户)", desc:"SSE: data: [DONE]"},
+};
+
+let W, H, cx, cy, stepIdx = -1, playing = false, playTimer = null, speeds = [1400,800,400,200,80];
+let speed = 2; // index into speeds
+
+function layout() {
+  const wrap = document.getElementById('canvas-wrap');
+  W = wrap.clientWidth; H = wrap.clientHeight;
+  cx = W/2; cy = H/2;
+  const r = Math.min(W*0.22, H*0.3);
+  const top = cy - r*1.1, bot = cy + r*1.1;
+  // ReAct 循环主环
+  NODES.agent.x = cx - r*0.55; NODES.agent.y = cy - r*0.3;
+  NODES.tools.x = cx + r*0.55; NODES.tools.y = cy - r*0.3;
+  // 用户
+  NODES.user.x = cx - r*0.55;  NODES.user.y = top;
+  // END
+  NODES.end.x  = cx - r*0.55;  NODES.end.y  = bot;
+  // Middleware — 在 agent 节点斜上方
+  NODES.mw.x   = NODES.agent.x - 70; NODES.mw.y = NODES.agent.y - 120;
+  // Checkpoint — 在底部中央
+  NODES.ckpt.x = cx;            NODES.ckpt.y = bot + 30;
+  // 画布尺寸匹配
+  const c = document.getElementById('c');
+  c.width = W * devicePixelRatio; c.height = H * devicePixelRatio;
+  c.style.width = W + 'px'; c.style.height = H + 'px';
+  const ctx = c.getContext('2d');
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+// ============================================================================
+// 绘制
+// ============================================================================
+function draw(activeNode, activeEdge, phase, step) {
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  // --- 背景网格 ---
+  ctx.strokeStyle = 'rgba(255,255,255,0.02)'; ctx.lineWidth = 1;
+  for (let x=0; x<W; x+=40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y=0; y<H; y+=40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // --- 绘制边 ---
+  const edges = [
+    {from:'user',to:'agent',label:'POST /chat/stream'},
+    {from:'agent',to:'tools',label:'有 tool_calls',cond:true,dashed:false},
+    {from:'tools',to:'agent',label:'返回结果'},
+    {from:'agent',to:'end',label:'无 tool_calls → END',cond:true,dashed:true},
+  ];
+  edges.forEach(e => {
+    const f = NODES[e.from], t = NODES[e.to];
+    if (!f || !t) return;
+    const isActive = activeEdge && activeEdge.from === e.from && activeEdge.to === e.to;
+    const alpha = isActive ? 1 : (stepIdx >= 0 ? 0.25 : 0.15);
+    ctx.strokeStyle = e.cond ? (isActive ? `rgba(163,113,247,${alpha})` : `rgba(163,113,247,${alpha*0.6})`)
+                             : (isActive ? `rgba(88,166,255,${alpha})` : `rgba(88,166,255,${alpha*0.6})`);
+    ctx.lineWidth = isActive ? 3.5 : 1.5;
+    ctx.setLineDash(e.dashed ? [8,5] : []);
+    ctx.beginPath();
+    // 带曲率的贝塞尔边
+    const dx = t.x - f.x, dy = t.y - f.y;
+    const cp = e.cond ? 0 : (e.to === 'agent' ? -0.4 : 0);
+    const midX = (f.x+t.x)/2, midY = (f.y+t.y)/2 + cp * Math.abs(dx);
+    ctx.moveTo(f.x, f.y);
+    ctx.quadraticCurveTo(midX, midY, t.x, t.y);
+    // 箭头
+    const arrowT = 0.85;
+    const ax = f.x + (t.x-f.x)*arrowT + (midX - (f.x+t.x)/2)*2*arrowT*(1-arrowT);
+    const ay = f.y + (t.y-f.y)*arrowT + (midY - (f.y+t.y)/2)*2*arrowT*(1-arrowT);
+    ctx.stroke();
+    // 箭头三角形（简化）
+    if (isActive) drawArrow(ctx, midX, midY, t.x, t.y, isActive);
+    ctx.setLineDash([]);
+    // 标签
+    if (!e.cond || isActive) {
+      ctx.fillStyle = isActive ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.25)';
+      ctx.font = '11px "Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(isActive ? '▶ '+e.label : e.label, midX + (e.cond?0:0), midY - (e.cond?16:10));
+    }
+  });
+
+  // --- 绘制节点 ---
+  Object.entries(NODES).forEach(([key, n]) => {
+    const isActive = activeNode === key;
+    const isMwOrCkpt = key === 'mw' || key === 'ckpt';
+    const alpha = (isActive || stepIdx < 0) ? 1 : (isMwOrCkpt ? 0.4 : 0.7);
+    const r = isMwOrCkpt ? 32 : 44;
+
+    // 光晕
+    if (isActive) {
+      const grd = ctx.createRadialGradient(n.x, n.y, r*0.5, n.x, n.y, r*1.8);
+      const color = key==='agent'?'58,166,255':key==='tools'?'63,185,80':key==='user'?'210,153,29':key==='mw'?'163,113,247':key==='ckpt'?'57,211,83':'248,81,73';
+      grd.addColorStop(0, `rgba(${color},0.35)`); grd.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(n.x, n.y, r*1.8, 0, Math.PI*2); ctx.fill();
+    }
+
+    // 节点圆
+    const grad = ctx.createLinearGradient(n.x-r, n.y-r, n.x+r, n.y+r);
+    const color = key==='agent'?'#1a3a5c':key==='tools'?'#1a3c1a':key==='user'?'#3c2a1a':key==='mw'?'#2a1a3c':key==='ckpt'?'#1a3c2a':'#3c1a1a';
+    grad.addColorStop(0, isActive ? color.replace('1a','2a') : color); grad.addColorStop(1, color);
+    ctx.fillStyle = grad;
+    ctx.strokeStyle = isActive ? (key==='agent'?'#58a6ff':key==='tools'?'#3fb950':key==='user'?'#d2991d':key==='mw'?'#a371f7':key==='ckpt'?'#39d353':'#f85149')
+                               : 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = isActive ? 3 : 1.3;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 图标+文字
+    const lines = n.label.split('\n');
+    ctx.fillStyle = `rgba(255,255,255,${isActive?1:0.7})`;
+    ctx.font = `${isMwOrCkpt?'12':'13'}px "Microsoft YaHei",sans-serif`;
+    ctx.textAlign = 'center';
+    lines.forEach((line, i) => {
+      const fontSize = i===0 ? (isMwOrCkpt?13:15) : (isMwOrCkpt?10:11);
+      ctx.font = `bold ${fontSize}px "Microsoft YaHei",sans-serif`;
+      const yOff = lines.length === 2 ? (i===0 ? -6 : 14) : 0;
+      ctx.fillText(line, n.x, n.y + yOff);
+    });
+  });
+
+  // --- 当前阶段说明 ---
+  if (stepIdx >= 0) {
+    const t = TRACE[stepIdx];
+    const label = {
+      input:'收到用户请求', before_model:'中间件：记录调用开始',
+      agent_thinking:'LLM 正在推理...', routing:'条件路由判断',
+      wrap_tool:'中间件：记录工具调用', tool_exec:'执行工具函数',
+      after_model:'中间件：记录调用完成', agent_final:'LLM 生成最终回答',
+      checkpoint:'保存 State 快照',
+    }[t.phase] || t.phase;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(W-280, H-52, 270, 42);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 14px "Microsoft YaHei",sans-serif'; ctx.textAlign='right';
+    ctx.fillText(`📍 步骤 ${stepIdx+1}/${TRACE.length}: ${label}`, W-16, H-22);
+  }
+}
+
+function drawArrow(ctx, x1, y1, x2, y2, active) {
+  const angle = Math.atan2(y2-y1, x2-x1);
+  const size = active ? 10 : 6;
+  const tx = x2 - Math.cos(angle)*44;
+  const ty = y2 - Math.sin(angle)*44;
+  ctx.fillStyle = active ? '#58a6ff' : 'rgba(255,255,255,0.3)';
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - size*Math.cos(angle-Math.PI/6), ty - size*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(tx - size*Math.cos(angle+Math.PI/6), ty - size*Math.sin(angle+Math.PI/6));
+  ctx.closePath(); ctx.fill();
+}
+
+// ============================================================================
+// 状态更新
+// ============================================================================
+function updatePanel() {
+  const logEl = document.getElementById('msg-log');
+  document.getElementById('cycle-num').textContent = `${Math.min(stepIdx+1, TRACE.length)}/${TRACE.length}`;
+
+  if (stepIdx < 0) {
+    document.getElementById('phase-label').textContent = '就绪';
+    document.getElementById('msg-count').textContent = '0';
+    logEl.innerHTML = '<div class="entry system">等待用户输入...</div>';
+    return;
+  }
+  const t = TRACE[stepIdx];
+  document.getElementById('phase-label').textContent = t.phase;
+  let msgCount = 0;
+  for (let i=0; i<=stepIdx; i++) if (TRACE[i].msg) msgCount++;
+  document.getElementById('msg-count').textContent = msgCount;
+
+  // 累加日志
+  logEl.innerHTML = '';
+  for (let i=0; i<=stepIdx; i++) {
+    const e = TRACE[i];
+    if (e.log) {
+      const div = document.createElement('div');
+      div.className = 'entry ' + e.log.role;
+      div.textContent = e.log.text;
+      logEl.appendChild(div);
+    }
+  }
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function updateCanvas() {
+  if (stepIdx < 0) { draw(null, null, null, -1); return; }
+  const t = TRACE[stepIdx];
+  let activeNode = t.node;
+  let activeEdge = t.edge;
+  // 中间件阶段高亮 mw 节点
+  if (t.phase === 'before_model' || t.phase === 'after_model' || t.phase === 'wrap_tool') activeNode = 'mw';
+  if (t.phase === 'checkpoint') activeNode = 'ckpt';
+  if (t.phase === 'input') activeNode = 'user';
+  draw(activeNode, activeEdge, t.phase, stepIdx);
+}
+
+function applyStep() {
+  updatePanel();
+  updateCanvas();
+  updateButtons();
+}
+
+function updateButtons() {
+  document.getElementById('btn-step').disabled = (stepIdx >= TRACE.length - 1);
+  document.getElementById('btn-play').textContent = playing ? '⏸ 暂停' : '▶ 自动播放';
+  document.getElementById('btn-play').className = playing ? 'btn reset' : 'btn play';
+}
+
+// ============================================================================
+// 控制
+// ============================================================================
+function stepForward() {
+  if (stepIdx < TRACE.length - 1) { stepIdx++; applyStep(); }
+}
+function resetSim() {
+  stopPlay();
+  stepIdx = -1;
+  applyStep();
+}
+function togglePlay() {
+  if (playing) { stopPlay(); } else { startPlay(); }
+}
+function startPlay() {
+  playing = true;
+  updateButtons();
+  if (stepIdx >= TRACE.length - 1) { stepIdx = -1; applyStep(); }
+  scheduleNext();
+}
+function stopPlay() {
+  playing = false;
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+  updateButtons();
+}
+function scheduleNext() {
+  if (!playing || stepIdx >= TRACE.length-1) { if (stepIdx >= TRACE.length-1) stopPlay(); return; }
+  playTimer = setTimeout(() => {
+    if (!playing) return;
+    stepIdx++;
+    applyStep();
+    scheduleNext();
+  }, speeds[speed-1] || 400);
+}
+function updateSpeed(v) {
+  speed = parseInt(v);
+  document.getElementById('speed-label').textContent = speed + '×';
+}
+
+// ============================================================================
+// 悬停提示
+// ============================================================================
+const canvas = document.getElementById('c');
+const tooltip = document.getElementById('tooltip');
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let found = null;
+  Object.entries(NODES).forEach(([key, n]) => {
+    const r = (key==='mw'||key==='ckpt') ? 40 : 52;
+    if (Math.hypot(mx-n.x, my-n.y) < r) found = {key, ...n};
+  });
+  if (found) {
+    tooltip.innerHTML = `<strong>${found.label.replace(/\n/g,'<br>')}</strong><br><span style="color:var(--muted);font-size:0.9em">${found.desc.replace(/\n/g,'<br>')}</span>`;
+    tooltip.className = 'tooltip show';
+    tooltip.style.left = (e.clientX - canvas.getBoundingClientRect().left + 20) + 'px';
+    tooltip.style.top  = (e.clientY - canvas.getBoundingClientRect().top - 60) + 'px';
+  } else {
+    tooltip.className = 'tooltip';
+  }
+});
+canvas.addEventListener('mouseleave', () => { tooltip.className = 'tooltip'; });
+
+// ============================================================================
+// 键盘控制
+// ============================================================================
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); stepForward(); }
+  if (e.key === 'p' || e.key === 'P') { e.preventDefault(); togglePlay(); }
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); resetSim(); }
+});
+
+// ============================================================================
+// 初始化
+// ============================================================================
+window.addEventListener('resize', () => { layout(); updateCanvas(); });
+layout();
+updateCanvas();
+updateButtons();
+
+// 启动提示
+console.log('🎮 Agent 行为模拟器已就绪');
+console.log('  →  / ←   : 逐步播放');
+console.log('  P         : 自动播放/暂停');
+console.log('  R         : 重置');
+console.log('  悬停节点   : 查看说明');
+</script>
+</body>
+</html>

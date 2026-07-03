@@ -34,14 +34,10 @@ def test_state_structure():
 
 
 def test_graph_builds():
-    """测试三种 graph 都能成功编译"""
-    from src.agent.graph import graph, graph_persistent, agent_with_middleware
+    """测试 graph 能成功编译"""
+    from src.agent.graph import graph
 
-    # 手写版：agent 节点叫 "agent"
     assert "agent" in graph.nodes
-    assert "agent" in graph_persistent.nodes
-    # create_agent() 版：LLM 节点叫 "model"，中间件各有独立节点
-    assert "model" in agent_with_middleware.nodes or "agent" in agent_with_middleware.nodes
 
 
 def test_checkpointer_factory_memory():

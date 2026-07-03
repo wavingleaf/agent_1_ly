@@ -23,12 +23,126 @@ FastAPI 入口 — SSE 流式 Agent 服务
 
 import json
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
-from .agent.graph import graph_persistent  # SqliteSaver：进程重启后保留记忆
+from .agent.graph import graph  # MemorySaver：支持 astream()；需要持久化时换 SqliteSaver + 同步 invoke()
+
+
+# ============================================================================
+# 消息序列化辅助 —— 把 LangChain 消息对象转为前端可解析的纯 dict
+# ============================================================================
+
+def _msg_to_dict(msg) -> dict:
+    """
+    将任意 LangChain 消息对象转为 JSON-safe 的 dict。
+
+    json.dumps 的 default=str 会把 AIMessage 转成类似
+    "content='你好' additional_kwargs={} ..." 的字符串，
+    前端无法从中提取 type/content/tool_calls 字段。
+    这个函数手动提取关键字段，确保前端拿到结构化数据。
+    """
+    d = {"type": getattr(msg, "type", "unknown")}
+
+    # 文本内容
+    content = getattr(msg, "content", "")
+    if isinstance(content, list):
+        # Anthropic/某些模型返回 content blocks 列表
+        d["content"] = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    else:
+        d["content"] = str(content) if content else ""
+
+    # 工具调用（AIMessage 上）
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        d["tool_calls"] = [
+            {
+                "name": tc.get("name", ""),
+                "args": tc.get("args", {}),
+            }
+            for tc in tool_calls
+        ]
+
+    # 工具名（ToolMessage 上）
+    name = getattr(msg, "name", None)
+    if name:
+        d["name"] = name
+
+    return d
+
+
+def _serialize_event(event) -> str:
+    """
+    将 LangGraph astream 产出的 event 转为 JSON 字符串。
+
+    两种 event 格式：
+    1. (mode, payload) 元组 — stream_mode 为列表时（如 ['updates','messages']）
+       - 'updates' mode: payload = {节点名: {messages: [AIMessage, ...]}}
+       - 'messages' mode: payload = (AIMessageChunk, metadata)
+    2. 裸 dict — stream_mode 为单字符串时（如 'updates'）
+       event = {节点名: {messages: [AIMessage, ...]}}
+    """
+    # 检测事件格式
+    if isinstance(event, tuple) and len(event) >= 2:
+        mode, payload = event[0], event[1]
+
+        if mode == "updates" and isinstance(payload, dict):
+            # payload 中每个节点更新里的 messages 列表需要转 dict
+            clean_payload = {}
+            for node_name, update in payload.items():
+                if isinstance(update, dict) and "messages" in update:
+                    clean_update = dict(update)
+                    clean_update["messages"] = [
+                        _msg_to_dict(m) for m in update["messages"]
+                    ]
+                    clean_payload[node_name] = clean_update
+                else:
+                    clean_payload[node_name] = update
+            return json.dumps([mode, clean_payload], ensure_ascii=False)
+
+        elif mode == "messages" and isinstance(payload, tuple) and len(payload) >= 1:
+            # payload = (AIMessageChunk, metadata_dict)
+            msg, metadata = payload[0], payload[1] if len(payload) > 1 else {}
+            clean_msg = _msg_to_dict(msg)
+            return json.dumps([mode, [clean_msg, metadata]], ensure_ascii=False)
+
+        else:
+            # 其他 tuple 格式 —— 逐个尝试转换
+            return json.dumps([mode, _clean_any(payload)], ensure_ascii=False)
+
+    elif isinstance(event, dict):
+        # 单 stream_mode 字符串时的裸 dict
+        clean = {}
+        for node_name, update in event.items():
+            if isinstance(update, dict) and "messages" in update:
+                clean_update = dict(update)
+                clean_update["messages"] = [
+                    _msg_to_dict(m) for m in update["messages"]
+                ]
+                clean[node_name] = clean_update
+            else:
+                clean[node_name] = update
+        return json.dumps(clean, ensure_ascii=False)
+
+    else:
+        return json.dumps(event, default=str, ensure_ascii=False)
+
+
+def _clean_any(obj):
+    """递归清理 dict/list 中的 LangChain 消息对象"""
+    if hasattr(obj, "type") and hasattr(obj, "content"):
+        return _msg_to_dict(obj)
+    if isinstance(obj, dict):
+        return {k: _clean_any(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_any(v) for v in obj]
+    return obj
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +174,17 @@ class HealthResponse(BaseModel):
 # ============================================================================
 # 路由
 # ============================================================================
+
+# 项目根目录 —— 用于读取静态文件
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """聊天 + Debug 界面"""
+    html_path = _PROJECT_ROOT / "debug_ui.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
@@ -99,7 +224,7 @@ async def chat_stream(req: ChatRequest):
         )
 
         try:
-            async for event in graph_persistent.astream(
+            async for event in graph.astream(
                 {"messages": [{"role": "user", "content": req.message}]},
                 config=config,
                 stream_mode=["updates", "messages"],
@@ -107,7 +232,7 @@ async def chat_stream(req: ChatRequest):
                 # event 格式：(mode, payload) 元组
                 # 转为 JSON 注意：AIMessage 等对象不能直接 json.dumps
                 # 用 default=str 兜底
-                yield f"data: {json.dumps(event, default=str, ensure_ascii=False)}\n\n"
+                yield f"data: {_serialize_event(event)}\n\n"
 
         except Exception as exc:
             logger.error("流式处理出错: %s", exc)
@@ -136,7 +261,7 @@ async def chat(req: ChatRequest):
     """
     config = {"configurable": {"thread_id": req.thread_id}}
 
-    result = graph_persistent.invoke(
+    result = graph.invoke(
         {"messages": [{"role": "user", "content": req.message}]},
         config=config,
     )
