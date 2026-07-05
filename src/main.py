@@ -21,15 +21,20 @@ FastAPI 入口 — SSE 流式 Agent 服务
       --no-buffer
 """
 
+import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
-from .agent.graph import graph  # MemorySaver：支持 astream()；需要持久化时换 SqliteSaver + 同步 invoke()
+# 导入 graph 模块（而非 graph 变量）——
+# lifespan 启动时会用 AsyncSqliteSaver 替换 graph_mod.graph，
+# 通过模块属性访问确保始终拿到最新实例。
+from .agent import graph as graph_mod
 
 
 # ============================================================================
@@ -148,7 +153,35 @@ def _clean_any(obj):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent.api")
 
-app = FastAPI(title="LangChain Agent API", version="0.1.0")
+
+# ============================================================================
+# FastAPI 生命周期：启动时用 AsyncSqliteSaver 替换 MemorySaver
+# ============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    应用生命周期管理。
+
+    启动时：创建 AsyncSqliteSaver，重新编译 graph，
+           使对话历史持久化到 SQLite 磁盘文件。
+    关闭时：（AsyncSqliteSaver 的连接由 aiosqlite 自动管理）
+
+    为什么在 lifespan 中做而非模块级 import 时做：
+    - aiosqlite.connect() 是 async 调用，不能在同步上下文中执行
+    - FastAPI lifespan 是官方推荐的异步初始化入口
+    """
+    from .memory.store import create_async_checkpointer
+    from .agent.graph import init_graph
+
+    checkpointer = await create_async_checkpointer()
+    init_graph(checkpointer=checkpointer)
+    logger.info("AsyncSqliteSaver 初始化完成，对话历史将持久化到磁盘")
+    yield
+    logger.info("Agent 服务关闭")
+
+
+app = FastAPI(title="LangChain Agent API", version="0.1.0", lifespan=lifespan)
 
 
 # ============================================================================
@@ -161,14 +194,50 @@ class ChatRequest(BaseModel):
 
     thread_id 用于隔离不同会话——同一个前端用户可以开多个对话线程。
     不传则默认 "default"。
+
+    mode 控制 Agent 的行为模式：
+    - "general"（默认）：通用开发者助手
+    - "dst"：DST（饥荒联机版）Mod 开发助手
+    - "plan"：规划模式（占位，当前仅影响回答风格）
     """
     message: str
     thread_id: str = "default"
+    mode: str = "general"
 
 
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+# ============================================================================
+# 辅助：读取对话历史
+# ============================================================================
+
+async def _load_history(thread_id: str):
+    """
+    读取指定线程的对话历史。
+
+    LangGraph 的 checkpointer 在每个 superstep 后自动保存 State。
+    graph.aget_state() 返回最新的 checkpoint 快照，无需 invoke。
+    """
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await graph_mod.graph.aget_state(config)
+        if state is None or not state.values:
+            return []
+        msgs = state.values.get("messages", [])
+        return [_msg_to_dict(m) for m in msgs]
+    except Exception as exc:
+        logger.warning("读取历史失败 [thread=%s]: %s", thread_id, exc)
+        return []
+
+
+@app.get("/chat/history/{thread_id}")
+async def chat_history(thread_id: str):
+    """读取指定对话线程的历史消息（页面刷新/切换线程时调用）"""
+    history = await _load_history(thread_id)
+    return {"thread_id": thread_id, "message_count": len(history), "messages": history}
 
 
 # ============================================================================
@@ -183,7 +252,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 async def index():
     """聊天 + Debug 界面"""
     html_path = _PROJECT_ROOT / "debug_ui.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        html_path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -207,7 +279,8 @@ async def chat_stream(req: ChatRequest):
     - "updates" — 节点执行完毕时的状态变更（可以拿到完整消息）
     - "messages" — LLM 逐 token 输出（打字机效果）
     """
-    config = {"configurable": {"thread_id": req.thread_id}}
+    config = {"configurable": {"thread_id": req.thread_id, "mode": req.mode}}
+    logger.info("[/chat/stream] mode=%s thread=%s", req.mode, req.thread_id)
 
     async def event_generator():
         """
@@ -216,6 +289,11 @@ async def chat_stream(req: ChatRequest):
         采用 stream_mode=["updates", "messages"] 组合：
         - "updates"   让前端知道"哪个节点完成了"（用于进度条）
         - "messages"  让前端做逐 token 渲染（打字机效果）
+
+        Debug 改进（2026-07-04）：graph.astream() 包装为 asyncio.Task。
+        当客户端断连（关闭标签页）时，finally 块会 cancel 掉任务，
+        避免后端继续调用 LLM 白白消耗 token。
+        参考：SuperMew 项目的 agent_task.cancel() 模式。
         """
         logger.info(
             "开始流式处理 [thread=%s]: %s",
@@ -223,20 +301,46 @@ async def chat_stream(req: ChatRequest):
             req.message[:50] + "..." if len(req.message) > 50 else req.message,
         )
 
-        try:
-            async for event in graph.astream(
-                {"messages": [{"role": "user", "content": req.message}]},
-                config=config,
-                stream_mode=["updates", "messages"],
-            ):
-                # event 格式：(mode, payload) 元组
-                # 转为 JSON 注意：AIMessage 等对象不能直接 json.dumps
-                # 用 default=str 兜底
-                yield f"data: {_serialize_event(event)}\n\n"
+        # asyncio.Queue 作为后台 Agent 任务与 SSE 生成器之间的桥梁
+        q: asyncio.Queue = asyncio.Queue()
 
-        except Exception as exc:
-            logger.error("流式处理出错: %s", exc)
-            yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+        async def _run_agent():
+            """后台任务：运行 graph.astream()，将事件逐个推入队列"""
+            try:
+                async for event in graph_mod.graph.astream(
+                    {"messages": [{"role": "user", "content": req.message}]},
+                    config=config,
+                    stream_mode=["updates", "messages"],
+                ):
+                    await q.put(("event", event))
+                await q.put(("done", None))
+            except asyncio.CancelledError:
+                logger.info("Agent 任务被取消 [thread=%s]", req.thread_id)
+                # 不 raise —— 被取消是预期行为，静默处理
+            except Exception as exc:
+                await q.put(("error", exc))
+
+        # 将 Agent 推理包装为 Task，以便在客户端断连时能 cancel
+        agent_task = asyncio.create_task(_run_agent())
+
+        try:
+            while True:
+                kind, value = await q.get()
+                if kind == "done":
+                    break
+                elif kind == "error":
+                    logger.error("流式处理出错: %s", value)
+                    yield f"data: {json.dumps({'error': str(value)}, ensure_ascii=False)}\n\n"
+                    break
+                else:
+                    # value 是 graph.astream() 产出的 (mode, payload) 元组
+                    yield f"data: {_serialize_event(value)}\n\n"
+
+        finally:
+            # 关键：客户端断连 → GeneratorExit → finally 触发 → cancel 后台任务
+            if not agent_task.done():
+                agent_task.cancel()
+                logger.info("SSE 断连，已取消 Agent 任务 [thread=%s]", req.thread_id)
 
         yield "data: [DONE]\n\n"
         logger.info("流式处理完成 [thread=%s]", req.thread_id)
@@ -258,10 +362,14 @@ async def chat(req: ChatRequest):
     非流式聊天端点（用于对比调试）。
 
     返回完整结果，适合 curl 快速测试。
-    """
-    config = {"configurable": {"thread_id": req.thread_id}}
 
-    result = graph.invoke(
+    注意：lifespan 已将 graph 升级为 AsyncSqliteSaver，必须用 ainvoke()
+    而非 invoke()，否则同步调用异步 checkpointer 会 500 报错。
+    """
+    config = {"configurable": {"thread_id": req.thread_id, "mode": req.mode}}
+    logger.info("[/chat] mode=%s thread=%s", req.mode, req.thread_id)
+
+    result = await graph_mod.graph.ainvoke(
         {"messages": [{"role": "user", "content": req.message}]},
         config=config,
     )

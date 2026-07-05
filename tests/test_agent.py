@@ -2,15 +2,18 @@
 Agent 基础测试
 
 在 CI 或本地运行：
-    cd d:/Github项目/agent项目
-    python -m pytest tests/ -v
+    cd d:/Github项目/agent项目/agent_langchain_1_ly
+    D:/Apps/Python/python.exe -m pytest tests/ -v
 
-注意：这些测试需要 .env 中有有效的 OPENAI_API_KEY。
-在没有 API key 的环境会自动跳过。
+注意：集成测试需要 .env 中有有效的 OPENAI_API_KEY。
+在没有有效 API key 的环境会自动跳过。
 """
 
-import os
 import pytest
+
+# pydantic-settings 会自动从 .env 文件加载；os.getenv 则只看真实环境变量。
+# 测试中用 settings 来判断是否有有效 API key，避免误 skip。
+from src.config.settings import settings
 
 
 def test_settings_load():
@@ -21,10 +24,15 @@ def test_settings_load():
 
 def test_tools_import():
     """测试工具模块可导入并有工具"""
-    from src.tools.builtin import ALL_TOOLS
-    assert len(ALL_TOOLS) >= 2
+    from src.tools.builtin import ALL_TOOLS, DST_TOOLS
+    assert len(ALL_TOOLS) == 3
     assert ALL_TOOLS[0].name == "get_current_time"
     assert ALL_TOOLS[1].name == "calculator"
+    assert ALL_TOOLS[2].name == "grep"
+    # DST 模式不含 get_current_time（避免 DeepSeek 误调）
+    assert len(DST_TOOLS) == 2
+    assert DST_TOOLS[0].name == "calculator"
+    assert DST_TOOLS[1].name == "grep"
 
 
 def test_state_structure():
@@ -56,8 +64,29 @@ def test_checkpointer_factory_sqlite():
     assert isinstance(c, SqliteSaver)
 
 
+def test_grep_tool_basic():
+    """测试 grep 工具能正常搜索 DST 源码"""
+    from src.tools.grep_ly import grep
+
+    # 搜索一个确定存在的组件名 —— domesticatable.lua 中应该有 SetDomestication
+    result = grep.invoke({"pattern": "SetDomestication"})
+
+    # 应该找到匹配
+    assert "未找到" not in result
+    assert "错误" not in result
+    assert "domesticatable" in result.lower() or "匹配" in result
+
+
+def test_grep_tool_not_found():
+    """测试 grep 工具在搜不到时返回提示"""
+    from src.tools.grep_ly import grep
+
+    result = grep.invoke({"pattern": "ThisSymbolDefinitelyDoesNotExist12345"})
+    assert "未找到" in result
+
+
 @pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "").startswith("sk-xxx"),
+    not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY.startswith("sk-xxx"),
     reason="需要有效的 OPENAI_API_KEY（不能是占位值 sk-xxx）",
 )
 def test_agent_invoke():
@@ -74,7 +103,7 @@ def test_agent_invoke():
 
 
 @pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "").startswith("sk-xxx"),
+    not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY.startswith("sk-xxx"),
     reason="需要有效的 OPENAI_API_KEY",
 )
 def test_multi_turn_memory():

@@ -18,7 +18,7 @@ v0.1.0-demo  |  LangChain 1.3 · LangGraph 1.2 · FastAPI · SQLite  |  2026-07-
 🟢 核心链路跑通     Agent 正确调工具并返回结果（DeepSeek API 验证通过）
 🟢 Web Debug UI    聊天窗 + StateGraph 节点流转图 + 步骤时间线联动
 🟢 SSE 流式输出     FastAPI StreamingResponse + 打字机效果
-🟢 多轮对话记忆     MemorySaver（进程内，重启丢失）
+🟢 多轮对话记忆     AsyncSqliteSaver（持久化到磁盘）
 🟡 待集成业务工具   当前仅含 2 个教学工具，grep 工具 TODO
 ⚪ 远期功能         控制台指令辅助编写（3 阶段路线图）
 ```
@@ -68,6 +68,8 @@ curl -X POST http://localhost:8000/chat/stream \
 |------|------|---------|
 | **手写 StateGraph ReAct 循环** | agent ↔ tools 循环，条件边路由，agent_node 内嵌日志 | [langgraph-101](https://github.com/langchain-ai/langgraph-101) 官方教程 |
 | **SSE 流式 + 打字机效果** | FastAPI StreamingResponse + `stream_mode=["updates","messages"]` | [fastapi-langgraph-template](https://github.com/wassim249/fastapi-langgraph-agent-production-ready-template) |
+| **SSE 断连自动取消任务** | 客户端关闭标签页时 cancel 后台 Agent 任务，不浪费 token | SuperMew `agent_task.cancel()` 模式 |
+| **AsyncSqliteSaver 持久化** | 对话历史持久化到磁盘，进程重启后不丢失（lifespan 初始化） | [控制台指令辅助编写_TODO.md](文档/控制台指令辅助编写_TODO.md) 改进 #2 |
 
 ### Debug 工具链
 
@@ -98,7 +100,7 @@ curl -X POST http://localhost:8000/chat/stream \
 ├──────────────────────────────────┤
 │  工具层      @tool               │  get_current_time / calculator
 ├──────────────────────────────────┤
-│  记忆层      MemorySaver         │  进程内多轮记忆（持久化 TODO）
+│  记忆层      AsyncSqliteSaver  │  持久化多轮记忆（重启不丢失）
 └──────────────────────────────────┘
 ```
 
@@ -111,7 +113,7 @@ curl -X POST http://localhost:8000/chat/stream \
 ## 已知限制
 
 - **仅含 2 个教学工具**（get_current_time / calculator），无实际业务能力
-- **对话重启丢失**：当前运行在 MemorySaver 上。AsyncSqliteSaver 持久化方案见 [TODO](文档/控制台指令辅助编写_TODO.md) 改进 #2
+- ~~对话重启丢失~~（已修复：2026-07-04 升级为 AsyncSqliteSaver 持久化）
 - **无集成测试**：需要有效 API key 才能跑完整的 Agent invoke 测试
 - **前端未工程化**：`debug_ui.html` 是单文件裸 JS/CSS/Canvas
 

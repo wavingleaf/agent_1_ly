@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # SQLite 数据库路径（存储 checkpoint）
     SQLITE_DB_PATH: str = "checkpoints.db"
 
+    # --- DST 源码目录 ---
+    # 从游戏安装目录 scripts.zip 解压出的 Lua 脚本所在路径。
+    # grep 工具将在此目录下执行精确字符串搜索。
+    # 为空时 grep 工具不执行搜索，返回"未配置源码目录"提示。
+    DST_SOURCE_DIR: str = ""
+
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",

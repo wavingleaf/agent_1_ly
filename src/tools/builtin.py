@@ -16,11 +16,10 @@ from langchain.tools import tool
 
 @tool
 def get_current_time() -> str:
-    """获取当前的日期和时间。不需要任何参数，直接调用即可。
+    """获取当前的日期和时间。
 
-    适用场景：
-    - 用户问"现在几点"
-    - 用户问"今天几号"
+    只有在用户明确询问"现在几点""今天几号""当前时间"时才调用此工具。
+    不要在其他场景下调用——如果不是明确问时间，说明用户需要的是其他工具。
     """
     now = datetime.datetime.now()
     return now.strftime("%Y年%m月%d日 %H:%M:%S（周%w）")
@@ -46,4 +45,18 @@ def calculator(expression: str) -> str:
 
 
 # 所有工具的列表 —— graph.py 中用来绑定到 LLM
-ALL_TOOLS = [get_current_time, calculator]
+from .grep_ly import grep
+
+ALL_TOOLS = [get_current_time, calculator, grep]
+
+# DST 模式的工具集 —— 去掉 get_current_time。
+# DeepSeek-chat 的 function calling 路由能力有限，即使工具描述明确写了
+# "不要在其他场景下调用"，仍偶尔会误调 get_current_time 来响应源码搜索请求。
+# 从工具列表中直接移除是最可靠的解法——模型看不到这个工具，就不可能误调。
+# 这也与 Claude Code 的设计一致：模式控制工具的可见性。
+DST_TOOLS = [calculator, grep]
+
+# Plan 模式的工具集 —— 当前为占位（项目尚无文件编辑工具）。
+# 未来如果有修改文件/执行命令的工具，Plan 模式会从 ALL_TOOLS 中去掉这些，
+# 实现"只读探索"。
+PLAN_TOOLS = ALL_TOOLS

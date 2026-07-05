@@ -97,46 +97,17 @@ Agent 需要：
 
 ## 近期可做的改进（低投入、高收益）
 
-### 改进 1：SSE 断连后取消 Agent 任务（~15 行）
+### 改进 1：SSE 断连后取消 Agent 任务（~15 行）✅ 已完成（2026-07-05）
 
-**现状**：用户关闭浏览器标签页后，后端的 `graph.astream()` 仍在运行，LLM 继续推理直到完成，白白消耗 token。
+**已于 2026-07-05 实现。** 见 [src/main.py](../src/main.py) `chat_stream` 端点：`asyncio.Task` + `asyncio.Queue` 包装 `graph.astream()`，断连时 `finally` 中 `agent_task.cancel()`。
 
-**方案**：在 `main.py` 的 `event_generator` 中，将 `graph.astream()` 包装为 `asyncio.Task`，在 `finally` 块里 `task.cancel()`。当 SSE 连接断开 → `GeneratorExit` → `finally` 触发 → cancel 掉 LLM 推理。
-
-```python
-# 伪代码
-async def event_generator():
-    task = asyncio.create_task(stream_graph())
-    try:
-        async for event in task: yield event
-    finally:
-        task.cancel()  # 用户断连 = 不继续烧 token
-```
-
-- [ ] 完成后记入 README 的「已实现功能」
-- 参考：SuperMew 项目的 `chat/service.py` 中 `agent_task.cancel()` 模式
+参考：SuperMew 项目的 `agent_task.cancel()` 模式。
 
 ---
 
-### 改进 2：AsyncSqliteSaver 持久化长期记忆（~20 行）
+### 改进 2：AsyncSqliteSaver 持久化长期记忆（~20 行）✅ 已完成（2026-07-05）
 
-**现状**：服务端用 `MemorySaver`，进程重启后所有对话历史丢失。之前尝试 `SqliteSaver.from_conn_string()` 失败——它是 context manager，无法在模块级全局使用。`AsyncSqliteSaver` 同理。
-
-**方案**：绕开 `from_conn_string()`，直接传 `aiosqlite.Connection` 给 `AsyncSqliteSaver` 构造函数：
-
-```python
-import aiosqlite
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-conn = await aiosqlite.connect("checkpoints.db")
-checkpointer = AsyncSqliteSaver(conn)
-graph = workflow.compile(checkpointer=checkpointer)
-# astream 正常运行，对话历史持久化到磁盘
-```
-
-`aiosqlite` 已作为 `langgraph-checkpoint-sqlite` 的依赖安装。改动位置：`src/memory/store.py` 新增 `create_async_checkpointer`，`src/main.py` 在 FastAPI lifespan 中初始化 graph。
-
-- [ ] 完成后将 README 项目状态行改为"🟢 多轮对话记忆（SqliteSaver，持久化）"
+**已于 2026-07-05 实现。** 见 [src/memory/store.py](../src/memory/store.py) `create_async_checkpointer()`，[src/main.py](../src/main.py) `lifespan` 中初始化。异步版 checkpointer 直接传 `aiosqlite.Connection` 绕过 context manager 限制。
 
 ---
 
@@ -163,6 +134,45 @@ graph = workflow.compile(checkpointer=checkpointer)
 - 当前项目（手写 StateGraph）是"学习骨架"，外层编排逻辑直接写在 `graph.py` 里
 - 当控制台指令辅助功能需要意图分类 + grep 检索 + 结果验证等复杂编排时，混合模式会让结构更清晰
 - [ ] 在控制台指令辅助的第一阶段实现时评估是否需要混合模式
+
+## 待添加工具
+
+当前 Agent 有 3 个工具：`get_current_time`、`calculator`、`grep`。grep 是唯一业务工具，但其能力边界有限——只搜字符串，不能读完整文件、不能查结构化数据。以下按优先级列出需要添加的工具。
+
+### 常见工具
+
+这些工具与 DST 领域无关，是开发助手的通用能力。
+
+| # | 工具 | 功能 | 为什么需要 | 实现复杂度 |
+|---|------|------|-----------|:--:|
+| 1 | **read_file** | 读取指定文件的完整内容（可选行范围截断） | grep 只给 2 行上下文，Agent 看不到完整函数体。grep 找位置，read_file 读内容——两者是搭档。 | 低（~40 行） |
+| 2 | **list_files** | 列出指定目录的文件和子目录 | Agent 不知道源码目录结构长什么样、组件放在 `components/` 还是 `scripts/`。list_files 让 Agent 在搜之前就知道去哪搜。 | 低（~30 行） |
+| 3 | **web_search** | 联网搜索 DST Wiki、Klei 论坛、Mod 社区 | LLM 训练数据中的 DST API 可能过时。联网搜索能帮 Agent 知道"该搜什么关键词"，但不替代 grep（grep 是地面真相）。 | 中（需搜索 API，如 Tavily/SerpAPI，或利用 DeepSeek 内置搜索） |
+
+### 垂直领域工具
+
+这些工具针对 DST Mod 开发场景，利用项目内已有的数据文件做结构化查询。
+
+| # | 工具 | 功能 | 数据源 | 与 grep 的关系 | 实现复杂度 |
+|---|------|------|--------|:---:|:--:|
+| 4 | **tuning_lookup** | 输入常量名（如 `AXE_DAMAGE`），返回定义值和计算表达式 | [tuning.lua](d:/Github项目/mod流水线/github同步/命名、参数记录/DST本体/tuning.lua) — 逐行解析 `KEY = value,` 键值对 | grep 只能搜到引用处（`SetDamage(TUNING.AXE_DAMAGE)`），找不到定义值（`= wilson_attack*.8`）。tuning_lookup 直接解析定义。 | 低（~50 行） |
+| 5 | **prefab_list** | 输入名称，返回该 prefab 是否存在于游戏中及基本信息 | [prefablist.lua](d:/Github项目/mod流水线/github同步/命名、参数记录/DST本体/prefablist.lua) — 纯数组，`"axe"`, `"beefalo"`, … | grep 也能搜，但专用工具更快且不会漏。用户问"给我一把斧子"→ Agent 用它确认 `axe` 是合法 prefab。 | 低（~40 行） |
+| 6 | **chinese_name_lookup** | 输入中文名（如"牛"），返回对应的 prefab ID（`beefalo`） | [chinese_s.po](d:/Github项目/mod流水线/github同步/命名、参数记录/DST本体/chinese_s.po)（42 万行翻译文件）→ [prefablist.lua](d:/Github项目/mod流水线/github同步/命名、参数记录/DST本体/prefablist.lua) | 本质是两阶段 grep：在 .po 中搜中文词 → 提取英文 msgid → 在 prefablist 中匹配。用户说"帮我的牛驯化度+7"，Agent 需要知道"牛"→`beefalo`→`domesticatable`。 | 中（~80 行，需启发式匹配） |
+
+**工具 4～6 都是 `grep_ly.py` 的垂直定制变体**——不扫描 4000 个 Lua 文件，只读已知的单个数据文件做解析。彼此独立，可以放在同一个文件 `src/tools/dst_data_ly.py` 中，共用 `Path.read_text()` 读文件。
+
+### 建议实现顺序
+
+```
+1. read_file     ← grep 的最佳搭档，立即提升分析能力
+2. list_files    ← 让 Agent 知道目录结构
+3. tuning_lookup ← 数据源格式规整，代码量小
+4. prefab_list   ← 同上
+5. chinese_name_lookup ← 控制台指令第一阶段的关键依赖（中文需求 → prefab ID）
+6. web_search    ← 需要选择搜索 API
+```
+
+---
 
 ## 实现阶段
 
