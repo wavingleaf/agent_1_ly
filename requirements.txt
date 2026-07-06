@@ -8,3 +8,4 @@ uvicorn[standard]
 python-dotenv
 pydantic-settings
 httpx
+duckduckgo_search>=7.0

@@ -97,7 +97,7 @@ body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:var(--bg)
 <body>
 
 <div id="chat">
-  <div id="chat-header"><h2>Agent Chat</h2><span class="badge">deepseek-chat</span><select id="mode-select" onchange="onModeChange()"><option value="general">通用助手</option><option value="dst">DST 助手</option><option value="plan">Plan（占位）</option></select><span style="flex:1"></span><select id="thread-select" onchange="switchThread(this.value)" title="选择对话线程"></select><button class="thread-btn" onclick="renameThread()" title="重命名">✎</button><button class="thread-btn" onclick="deleteThread()" title="删除">🗑</button><button class="thread-btn thread-btn-new" onclick="newThread()" title="新建对话">＋</button></div>
+  <div id="chat-header"><h2>Agent Chat</h2><span class="badge">deepseek-v4-pro</span><select id="mode-select" onchange="onModeChange()"><option value="general">通用助手</option><option value="dst">DST 助手</option><option value="plan">Plan（占位）</option></select><span style="flex:1"></span><select id="thread-select" onchange="switchThread(this.value)" title="选择对话线程"></select><button class="thread-btn" onclick="renameThread()" title="重命名">✎</button><button class="thread-btn" onclick="deleteThread()" title="删除">🗑</button><button class="thread-btn thread-btn-new" onclick="newThread()" title="新建对话">＋</button><button class="thread-btn" onclick="exportThread()" title="导出当前对话">⬇</button><button class="thread-btn" onclick="importThread()" title="导入对话">⬆</button></div>
   <div id="messages"><div style="text-align:center;color:var(--muted);padding:40px;font-size:0.9em">输入一个问题试试<br>例如"现在几点？"或"帮我算 123*456"</div></div>
   <div id="input-area"><input id="user-input" placeholder="输入消息..." onkeydown="if(event.key==='Enter')send()"><button id="send-btn" onclick="send()">发送</button></div>
 </div>
@@ -346,6 +346,58 @@ function deleteThread() {
     '<div style="text-align:center;color:var(--muted);padding:40px;font-size:0.9em">已切换到「' + escHtml(threads[0].name) + '」</div>';
   resetDebug();
   updStats();
+}
+
+async function exportThread() {
+  const t = _activeThread();
+  if (!t) return;
+  try {
+    const resp = await fetch('/chat/export/' + encodeURIComponent(threadId));
+    if (!resp.ok) throw new Error('导出失败: ' + resp.status);
+    const data = await resp.json();
+    // 将 localStorage 中的线程名写入导出包
+    data.thread_name = t.name;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'agent-chat-' + t.name.replace(/[\\/:*?"<>|]/g, '_') + '-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('导出失败: ' + e.message); }
+}
+
+function importThread() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json';
+  input.onchange = async function() {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.messages || !Array.isArray(data.messages)) throw new Error('文件格式不正确：缺少 messages 数组');
+      const name = data.thread_name || file.name.replace(/\.json$/i, '');
+      // 提交到后端
+      const resp = await fetch('/chat/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thread_name: name, messages: data.messages }),
+      });
+      if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail || '导入失败'); }
+      const result = await resp.json();
+      // 创建前端线程条目
+      const t = { id: result.thread_id, name: name, createdAt: Date.now() };
+      threads.unshift(t);
+      _saveThreads(threads);
+      threadId = t.id;
+      localStorage.setItem(LS_KEY_ACTIVE, threadId);
+      renderThreadDropdown();
+      // 刷新页面加载导入的对话
+      await loadThreadHistory(t.id);
+    } catch (e) { alert('导入失败: ' + e.message); }
+  };
+  input.click();
 }
 
 function onModeChange() {
@@ -630,7 +682,7 @@ function processEvent(event, aiBubble) {
           // LLM 同时产生 content 和 tool_calls 时，content 在先（前导文字），
           // tool_calls 在后（决定调工具）。步骤按此顺序记录。
           if (content) {
-            if (aiBubble._placeholder) { const el = aiBubble.querySelector('.content'); if (el && (!streamedContent || content.length > streamedContent.length)) el.innerHTML = renderMd(content); aiBubble._placeholder = false; }
+            if (aiBubble._placeholder) { const el = aiBubble.querySelector('.content'); if (el && (!streamedContent || content.length > streamedContent.length)) { el.innerHTML = renderMd(content); aiBubble._placeholder = false; } }
             addStep(hadToolCall ? 'agent_final' : 'agent_thinking', 'agent', hadToolCall ? 'tools→agent' : null, hadToolCall ? 'LLM 综合工具结果，最终回答' : 'LLM 直接回答', content.substring(0, 100), { aiContent: content });
           }
           if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
@@ -654,6 +706,14 @@ function processEvent(event, aiBubble) {
 }
 function onDone(aiBubble) {
   if (aiBubble._placeholder && streamedContent) { aiBubble.querySelector('.content').innerHTML = renderMd(streamedContent); aiBubble._placeholder = false; }
+  // 兜底：DOM 渲染未触发时，尝试从步骤数据中提取最后一条 LLM 回复来渲染气泡。
+  // 可能原因：框架层的 upates/messages 格式变化、V4 模型新增字段未适配。此时内容已存档，
+  // 可回退从步骤中恢复，避免出现“刷新后才看到”的体验。
+  if (aiBubble._placeholder) {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].aiContent) { aiBubble.querySelector('.content').innerHTML = renderMd(steps[i].aiContent); aiBubble._placeholder = false; break; }
+    }
+  }
   addStep('done', 'end', 'agent→end', 'END', hadToolCall ? 'tools_condition → END' : 'tools_condition → END');
   document.getElementById('st-elapsed').textContent = Math.round(performance.now() - startTime) + 'ms';
   // 将当前消息的步骤快照存入人类消息气泡的 DOM —— 后续 send() 会清空全局 steps，

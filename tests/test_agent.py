@@ -24,15 +24,20 @@ def test_settings_load():
 
 def test_tools_import():
     """测试工具模块可导入并有工具"""
-    from src.tools.builtin import ALL_TOOLS, DST_TOOLS
-    assert len(ALL_TOOLS) == 3
-    assert ALL_TOOLS[0].name == "get_current_time"
-    assert ALL_TOOLS[1].name == "calculator"
-    assert ALL_TOOLS[2].name == "grep"
+    from src.tools.builtin import ALL_TOOLS, DST_TOOLS, PLAN_TOOLS
+    assert len(ALL_TOOLS) == 6
+    tool_names = [t.name for t in ALL_TOOLS]
+    assert tool_names == [
+        "get_current_time", "calculator", "grep",
+        "read_file", "list_files", "web_search",
+    ]
     # DST 模式不含 get_current_time（避免 DeepSeek 误调）
-    assert len(DST_TOOLS) == 2
-    assert DST_TOOLS[0].name == "calculator"
-    assert DST_TOOLS[1].name == "grep"
+    assert len(DST_TOOLS) == 5
+    dst_names = [t.name for t in DST_TOOLS]
+    assert "get_current_time" not in dst_names
+    assert dst_names == ["calculator", "grep", "read_file", "list_files", "web_search"]
+    # Plan 模式当前等同于 ALL_TOOLS
+    assert len(PLAN_TOOLS) == 6
 
 
 def test_state_structure():
@@ -129,3 +134,106 @@ def test_multi_turn_memory():
         if getattr(msg, "type", "") == "ai" and msg.content:
             assert "测试员" in msg.content, f"Agent 应该记住名字，但回复是: {msg.content}"
             break
+
+
+# ═══════════════════════════════════════════════════════════════
+# read_file 工具测试
+# ═══════════════════════════════════════════════════════════════
+
+def test_read_file_basic():
+    """测试 read_file 能读取已知文件"""
+    from src.tools.read_file_ly import read_file
+
+    # 搜索一个确定存在的文件 —— 用 grep 先找到的实际文件
+    result = read_file.invoke({
+        "file_path": "components/domesticatable.lua",
+        "start_line": 1,
+        "end_line": 10,
+    })
+
+    assert "错误" not in result
+    assert "📄" in result
+    # 前 10 行应该包含 require("easing") 或 easing（该文件的标准开头）
+    assert ("require" in result or "easing" in result)
+
+
+def test_read_file_range():
+    """测试 read_file 行范围截断"""
+    from src.tools.read_file_ly import read_file
+
+    # 读一个范围
+    result = read_file.invoke({
+        "file_path": "components/domesticatable.lua",
+        "start_line": 5,
+        "end_line": 15,
+    })
+
+    assert "错误" not in result
+    assert "第 5～15 行" in result or "5～" in result
+
+
+def test_read_file_not_found():
+    """测试 read_file 文件不存在时返回错误"""
+    from src.tools.read_file_ly import read_file
+
+    result = read_file.invoke({"file_path": "nonexistent/file.lua"})
+    assert "不存在" in result or "错误" in result
+
+
+# ═══════════════════════════════════════════════════════════════
+# list_files 工具测试
+# ═══════════════════════════════════════════════════════════════
+
+def test_list_files_root():
+    """测试 list_files 列出根目录"""
+    from src.tools.list_files_ly import list_files
+
+    result = list_files.invoke({"directory": ""})
+    assert "错误" not in result
+    assert "📁" in result
+
+
+def test_list_files_subdir():
+    """测试 list_files 列出子目录"""
+    from src.tools.list_files_ly import list_files
+
+    result = list_files.invoke({"directory": "components"})
+    assert "错误" not in result
+    # components 目录下应该有 Lua 文件
+    assert ".lua" in result or "📁" in result or "📄" in result
+
+
+def test_list_files_not_found():
+    """测试 list_files 目录不存在时返回错误"""
+    from src.tools.list_files_ly import list_files
+
+    result = list_files.invoke({"directory": "nonexistent_dir_12345"})
+    assert "不存在" in result or "错误" in result
+
+
+# ═══════════════════════════════════════════════════════════════
+# web_search 工具测试
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.skipif(
+    True,  # 默认跳过，仅在有网络且手动执行时启用
+    reason="需要网络连接，仅在手动测试时取消 skip",
+)
+def test_web_search_basic():
+    """测试 web_search 能返回搜索结果（需要网络）"""
+    from src.tools.web_search_ly import web_search
+
+    result = web_search.invoke({"query": "DST beefalo domestication", "max_results": 3})
+    assert "错误" not in result
+    assert "🔍" in result
+    assert len(result) > 50  # 应该有实质内容
+
+
+def test_web_search_import():
+    """测试 web_search 工具可导入且参数正确"""
+    from src.tools.web_search_ly import web_search
+    assert web_search.name == "web_search"
+    # 验证参数
+    params = web_search.args_schema.model_fields  # type: ignore[union-attr]
+    assert "query" in params
+    assert "max_results" in params

@@ -44,9 +44,22 @@ class Settings(BaseSettings):
 
     # --- DST 源码目录 ---
     # 从游戏安装目录 scripts.zip 解压出的 Lua 脚本所在路径。
-    # grep 工具将在此目录下执行精确字符串搜索。
-    # 为空时 grep 工具不执行搜索，返回"未配置源码目录"提示。
+    # grep/read_file/list_files 工具将在此目录下执行文件操作。
+    # 为空时相关工具不执行，返回"未配置源码目录"提示。
     DST_SOURCE_DIR: str = ""
+
+    # --- DST 元数据目录 ---
+    # 存放 prefablist.lua / tuning.lua / chinese_s.po 等结构化元数据文件的目录。
+    # dst_data_lookup 工具将直接读取此目录下的特定文件（不递归搜索）。
+    # 为空时 dst_data_lookup 返回"未配置"提示，其余工具不受影响。
+    DST_META_DIR: str = ""
+
+    # --- 联网搜索代理 ---
+    # DuckDuckGo 在中国大陆网络环境下直连超时/返回空。
+    # 通过代理访问可解决。支持 http/https/socks5h 协议。
+    # 例如 Clash 默认: socks5h://127.0.0.1:7890
+    # 为空则直连搜索（可能不可用）。
+    DDG_PROXY: str = ""
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),

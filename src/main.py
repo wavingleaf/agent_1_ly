@@ -27,7 +27,10 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+import datetime
+import uuid as _uuid
+
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -238,6 +241,104 @@ async def chat_history(thread_id: str):
     """读取指定对话线程的历史消息（页面刷新/切换线程时调用）"""
     history = await _load_history(thread_id)
     return {"thread_id": thread_id, "message_count": len(history), "messages": history}
+
+
+# ============================================================================
+# 对话导出/导入
+# ============================================================================
+
+# 导出请求仅需 thread_id（由前端从 localStorage 取线程名一并打包）
+# 导入请求体定义见下方 endpoint
+
+@app.get("/chat/export/{thread_id}")
+async def export_thread(thread_id: str):
+    """
+    导出指定对话线程为 JSON 文件。
+
+    返回格式包含元数据（版本、导出时间、thread_id、线程名）和消息列表，
+    可用于备份、跨设备迁移、问题复现等场景。
+    前端将线程名称通过 query 参数传入（因为线程名只存在 localStorage 中）。
+    """
+    history = await _load_history(thread_id)
+    return {
+        "version": "0.3.0",
+        "exported_at": datetime.datetime.now().isoformat(),
+        "thread_id": thread_id,
+        "message_count": len(history),
+        "messages": history,
+    }
+
+
+class ImportRequest(BaseModel):
+    """导入对话线程的请求体"""
+    thread_name: str = "导入的对话"
+    messages: list[dict]
+
+
+@app.post("/chat/import")
+async def import_thread(req: ImportRequest):
+    """
+    导入一个对话线程。
+
+    将导出的消息列表写入新的 checkpoint 线程，返回新的 thread_id。
+    前端收到后创建对应的 localStorage 条目并切换到此线程。
+
+    消息还原：将 JSON dict 转回 LangChain 原生消息对象，
+    然后通过 graph.aupdate_state() 写入 checkpointer。
+    """
+    from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+    rebuilt = []
+    for m in req.messages:
+        mtype = m.get("type", "")
+        content = m.get("content", "")
+
+        if mtype == "human":
+            rebuilt.append(HumanMessage(content=content))
+        elif mtype == "ai":
+            tool_calls = m.get("tool_calls")
+            msg = AIMessage(content=content)
+            if tool_calls:
+                # tool_calls 在 dict 中不带 id，还原时需要重新分配以便 ToolMessage 关联
+                normalized = []
+                for tc in tool_calls:
+                    tc_id = str(_uuid.uuid4())[:8]
+                    normalized.append({
+                        "id": tc_id,
+                        "name": tc.get("name", ""),
+                        "args": tc.get("args", {}),
+                    })
+                msg.tool_calls = normalized
+            rebuilt.append(msg)
+        elif mtype == "tool":
+            name = m.get("name", "unknown_tool")
+            # ToolMessage 需要 tool_call_id 来关联到对应的 AIMessage.tool_calls
+            # 导入时 id 可能丢失（旧版导出格式不保存 id），使用占位 id
+            msg = ToolMessage(content=content, name=name, tool_call_id="imported")
+            rebuilt.append(msg)
+        else:
+            # 未知类型，跳过（避免污染 checkpoint）
+            logger.warning("导入时跳过未知消息类型: %s", mtype)
+
+    if not rebuilt:
+        raise HTTPException(status_code=400, detail="没有可导入的有效消息")
+
+    # 写入 checkpointer：用新 thread_id 将消息写入空的 checkpoint
+    new_thread_id = "import-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + str(_uuid.uuid4())[:8]
+    config = {"configurable": {"thread_id": new_thread_id}}
+
+    try:
+        await graph_mod.graph.aupdate_state(config, {"messages": rebuilt})
+        logger.info("导入成功: thread=%s, %d 条消息", new_thread_id, len(rebuilt))
+    except Exception as exc:
+        logger.error("导入失败: %s", exc)
+        raise HTTPException(status_code=500, detail=f"写入 checkpoint 失败: {exc}")
+
+    return {
+        "thread_id": new_thread_id,
+        "thread_name": req.thread_name,
+        "message_count": len(rebuilt),
+    }
 
 
 # ============================================================================

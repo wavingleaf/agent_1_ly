@@ -19,8 +19,9 @@ import os
 import re
 import fnmatch
 import logging
+from typing import Annotated
 from pathlib import Path
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolArg
 
 from ..config.settings import settings
 
@@ -87,7 +88,13 @@ def _search_file(filepath: Path, pattern: str, context_lines: int) -> list[dict]
 
 
 @tool
-def grep(pattern: str, context_lines: int = 2, max_results: int = 30) -> str:
+def grep(
+    pattern: str,
+    subdir: str = "",
+    context_lines: int = 2,
+    max_results: int = 30,
+    source_dir: Annotated[str, InjectedToolArg] = "",
+) -> str:
     """
     在源码目录中搜索指定的字符串，返回匹配行及上下文。
 
@@ -103,24 +110,31 @@ def grep(pattern: str, context_lines: int = 2, max_results: int = 30) -> str:
 
     Args:
         pattern: 要搜索的字符串（子串匹配，大小写敏感）。
+        subdir: 限定搜索的子目录（相对于源码根目录）。空字符串表示搜索整个源码目录。
+                例如 "components" 只搜索 components/ 下的文件。
+                如果用户明确说"在xxx目录下搜"，务必传入此参数以缩小范围、提升效率。
         context_lines: 每个匹配行前后显示几行上下文（默认 2）。
         max_results: 最多返回几条匹配结果（默认 30）。
     """
-    if not settings.DST_SOURCE_DIR:
+    src_dir = source_dir or settings.DST_SOURCE_DIR
+    if not src_dir:
         return (
             "错误：未配置 DST 源码目录。\n"
             "请在 .env 中设置 DST_SOURCE_DIR 指向 DST scripts.zip 解压后的目录。\n"
             "例如：DST_SOURCE_DIR=D:/Games/DST/scripts"
         )
 
-    root = Path(settings.DST_SOURCE_DIR)
+    root = Path(src_dir)
+    # 如果指定了子目录，拼到源码根目录下，限定搜索范围
+    if subdir:
+        root = root / subdir
     if not root.is_dir():
         return (
-            f"错误：DST 源码目录不存在或不可访问：{settings.DST_SOURCE_DIR}\n"
-            "请检查 .env 中的 DST_SOURCE_DIR 配置是否正确。"
+            f"错误：目录不存在或不可访问：{root}\n"
+            "请检查路径是否正确。如果指定了 subdir，确认该子目录存在。"
         )
 
-    logger.info("grep 搜索: pattern=%r, root=%s", pattern, root)
+    logger.info("grep 搜索: pattern=%r, root=%s, subdir=%r", pattern, root, subdir)
 
     lua_files = _collect_lua_files(root)
     if not lua_files:

@@ -46,15 +46,25 @@ def calculator(expression: str) -> str:
 
 # 所有工具的列表 —— graph.py 中用来绑定到 LLM
 from .grep_ly import grep
+from .read_file_ly import read_file
+from .list_files_ly import list_files
+from .web_search_ly import web_search
 
-ALL_TOOLS = [get_current_time, calculator, grep]
+ALL_TOOLS = [get_current_time, calculator, grep, read_file, list_files, web_search]
 
 # DST 模式的工具集 —— 去掉 get_current_time。
 # DeepSeek-chat 的 function calling 路由能力有限，即使工具描述明确写了
 # "不要在其他场景下调用"，仍偶尔会误调 get_current_time 来响应源码搜索请求。
 # 从工具列表中直接移除是最可靠的解法——模型看不到这个工具，就不可能误调。
 # 这也与 Claude Code 的设计一致：模式控制工具的可见性。
-DST_TOOLS = [calculator, grep]
+#
+# DST 模式保留的工具：
+# - calculator：数学计算（TUNING 值换算等）
+# - grep：源码精确搜索（核心工具）
+# - read_file：阅读完整函数体（grep 的搭档）
+# - list_files：浏览目录结构（搜索前了解去哪搜）
+# - web_search：联网查 Wiki/论坛（辅助发现候选关键词）
+DST_TOOLS = [calculator, grep, read_file, list_files, web_search]
 
 # Plan 模式的工具集 —— 当前为占位（项目尚无文件编辑工具）。
 # 未来如果有修改文件/执行命令的工具，Plan 模式会从 ALL_TOOLS 中去掉这些，

@@ -3,7 +3,7 @@
 手写 StateGraph ReAct 循环 · FastAPI SSE 流式部署 · Canvas Debug 面板。
 
 ```
-v0.1.0-demo  |  LangChain 1.3 · LangGraph 1.2 · FastAPI · SQLite  |  2026-07-03
+v0.3.0  |  LangChain 1.x · LangGraph 1.x · FastAPI · SQLite · DeepSeek V4  |  2026-07-06
 ```
 
 ## 项目定位
@@ -15,11 +15,12 @@ v0.1.0-demo  |  LangChain 1.3 · LangGraph 1.2 · FastAPI · SQLite  |  2026-07-
 ## 项目状态
 
 ```
-🟢 核心链路跑通     Agent 正确调工具并返回结果（DeepSeek API 验证通过）
+🟢 核心链路跑通     Agent 正确调工具并返回结果（DeepSeek V4 Pro API 验证通过）
 🟢 Web Debug UI    聊天窗 + StateGraph 节点流转图 + 步骤时间线联动
 🟢 SSE 流式输出     FastAPI StreamingResponse + 打字机效果
 🟢 多轮对话记忆     AsyncSqliteSaver（持久化到磁盘）
-🟡 待集成业务工具   当前仅含 2 个教学工具，grep 工具 TODO
+🟢 6 个业务工具     grep · read_file · list_files · web_search · calculator · get_current_time
+🟡 DST 垂直工具     dst_data_lookup（tuning_lookup + prefab_list + chinese_name_lookup 合并）
 ⚪ 远期功能         控制台指令辅助编写（3 阶段路线图）
 ```
 
@@ -70,6 +71,9 @@ curl -X POST http://localhost:8000/chat/stream \
 | **SSE 流式 + 打字机效果** | FastAPI StreamingResponse + `stream_mode=["updates","messages"]` | [fastapi-langgraph-template](https://github.com/wassim249/fastapi-langgraph-agent-production-ready-template) |
 | **SSE 断连自动取消任务** | 客户端关闭标签页时 cancel 后台 Agent 任务，不浪费 token | SuperMew `agent_task.cancel()` 模式 |
 | **AsyncSqliteSaver 持久化** | 对话历史持久化到磁盘，进程重启后不丢失（lifespan 初始化） | [控制台指令辅助编写_TODO.md](文档/控制台指令辅助编写_TODO.md) 改进 #2 |
+| **三模式系统（dst/general/plan）** | 不同模式对应不同 System Prompt + 工具集，避免 DeepSeek 误调无关工具 | Claude Code 权限矩阵设计 |
+| **6 个业务工具** | grep · read_file · list_files · web_search · calculator · get_current_time，按模式分配可见性。grep 支持 `subdir` 限定子目录搜索，web_search 支持 Clash 代理 | grep 精确检索优于 RAG（见 [设计决策.md](文档/设计决策.md) 决策 11） |
+| **对话导出/导入** | 导出当前线程为 JSON 文件，导入恢复对话（含 tool_calls 重建） | — |
 
 ### Debug 工具链
 
@@ -93,18 +97,19 @@ curl -X POST http://localhost:8000/chat/stream \
 
 ```
 ┌──────────────────────────────────┐
-│  API 层      FastAPI             │  /chat  /chat/stream  /health
+│  API 层      FastAPI             │  /chat  /chat/stream  /health  /chat/history
 │              SSE 流式推送         │
 ├──────────────────────────────────┤
 │  Agent 编排层 LangGraph          │  StateGraph · ReAct · 条件边 · checkpointer
 ├──────────────────────────────────┤
-│  工具层      @tool               │  get_current_time / calculator
+│  工具层      @tool               │  grep / read_file / list_files / web_search
+│              (按模式分配)         │  calculator / get_current_time
 ├──────────────────────────────────┤
 │  记忆层      AsyncSqliteSaver  │  持久化多轮记忆（重启不丢失）
 └──────────────────────────────────┘
 ```
 
-设计决策详见 [设计决策.md](文档/设计决策.md)（10 个 ADR，覆盖 SSE vs WebSocket、SqliteSaver 选型、StateGraph ReAct 循环等）。
+设计决策详见 [设计决策.md](文档/设计决策.md)（12 个 ADR，覆盖 SSE vs WebSocket、SqliteSaver 选型、grep 精确检索 vs RAG 等）。
 
 ## TODO
 
@@ -112,10 +117,9 @@ curl -X POST http://localhost:8000/chat/stream \
 
 ## 已知限制
 
-- **仅含 2 个教学工具**（get_current_time / calculator），无实际业务能力
-- ~~对话重启丢失~~（已修复：2026-07-04 升级为 AsyncSqliteSaver 持久化）
-- **无集成测试**：需要有效 API key 才能跑完整的 Agent invoke 测试
-- **前端未工程化**：`debug_ui.html` 是单文件裸 JS/CSS/Canvas
+- DuckDuckGo 搜索结果有长查询匹配差和噪音问题（已通过 DDG_PROXY 代理解决连通性）
+- 前端未工程化：`debug_ui.html` 是单文件裸 JS/CSS/Canvas，功能增长后需考虑拆分
+- 测试依赖网络：集成测试需要有效的 API key，web_search 需要代理或国外网络
 
 ## 项目文件
 
@@ -137,6 +141,8 @@ curl -X POST http://localhost:8000/chat/stream \
 ├── 文档/
 │   ├── 设计决策.md
 │   ├── 参考项目对比分析.md
+│   ├── 用户测试案例v0.2.0.md
+│   ├── 用户测试案例v0.3.0.md
 │   ├── 控制台指令辅助编写_TODO.md
 │   ├── notebooks/          学习 Notebook（01 → 04）
 │   └── 踩坑记录/            5 篇技术踩坑文档
@@ -146,7 +152,7 @@ curl -X POST http://localhost:8000/chat/stream \
 
 | 文档 | 文件 | 内容 |
 |------|------|------|
-| 设计决策（ADR） | [设计决策.md](文档/设计决策.md) | 10 个架构决策 |
+| 设计决策（ADR） | [设计决策.md](文档/设计决策.md) | 12 个架构决策 |
 | 参考项目对比分析 | [参考项目对比分析.md](文档/参考项目对比分析.md) | 6+1 个参考项目的详细对照 |
 | Agent 行为模拟器 | [agent项目介绍.html](文档/agent项目介绍.html) | 独立 HTML，可交互逐步骤播放 |
 
