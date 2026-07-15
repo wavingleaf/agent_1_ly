@@ -21,7 +21,12 @@ import logging
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.config import get_config
-from langchain_openai import ChatOpenAI
+# 2026-07-15: 从 ChatOpenAI 切换到 ChatDeepSeek，获得对 reasoning_content
+#（思考模式）的原生支持。ChatDeepSeek 继承了 ChatOpenAI 的所有接口
+#（bind_tools / invoke / astream），参数兼容，不需要改调用方。
+# ChatOpenAI 官宣不处理第三方 provider 的非标准字段（如 reasoning_content），
+# 而 ChatDeepSeek 在 _create_chat_result 中专门提取了这个字段。
+from langchain_deepseek import ChatDeepSeek
 
 from .state import AgentState
 from ..config.settings import settings
@@ -160,7 +165,15 @@ def build_graph(checkpointer=None):
     if settings.OPENAI_BASE_URL:
         llm_kwargs["base_url"] = settings.OPENAI_BASE_URL
 
-    model = ChatOpenAI(**llm_kwargs)
+    # 思考模式：根据 REASONING_EFFORT 配置注入参数。
+    # none → 不传任何思考参数（使用 V4-Pro 默认行为）
+    # high/max → 显式启用 + 设 reasoning_effort
+    re_effort = settings.REASONING_EFFORT
+    if re_effort in ("high", "max"):
+        llm_kwargs["reasoning_effort"] = re_effort
+        llm_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+
+    model = ChatDeepSeek(**llm_kwargs)
 
     # ── agent 节点：调用 LLM 进行推理 ──
     call_count = 0  # 闭包变量，统计 LLM 调用次数

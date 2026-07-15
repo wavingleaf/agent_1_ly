@@ -16,6 +16,10 @@ body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:var(--bg)
 #mode-select:focus{border-color:var(--accent)}
 #mode-select.dst-mode{border-color:var(--orange);color:var(--orange)}
 #mode-select.plan-mode{border-color:var(--purple);color:var(--purple)}
+#reasoning-select{padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.8em;cursor:pointer;outline:none}
+#reasoning-select:focus{border-color:var(--accent)}
+#reasoning-select.high-mode{border-color:var(--purple);color:var(--purple)}
+#reasoning-select.max-mode{border-color:var(--red);color:var(--red)}
 .thread-btn{padding:4px 10px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:0.78em;transition:.15s}
 .thread-btn:hover{border-color:var(--accent);color:var(--accent)}
 .thread-btn-new{font-weight:700;font-size:0.85em !important}
@@ -92,12 +96,20 @@ body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:var(--bg)
 .content hr{border:none;border-top:1px solid var(--border);margin:12px 0}
 .content p{margin:4px 0;line-height:1.55}
 .content .emoji{font-size:1.1em}
+/* ── 思考块（聊天区折叠卡片）── */
+.thinking-block{background:rgba(163,113,247,0.06);border:1px solid rgba(163,113,247,0.2);border-radius:8px;margin:4px 0 4px 20px;font-size:0.8em;max-width:90%;overflow:hidden;animation:fadeIn .25s;flex-shrink:0;min-height:44px}
+.thinking-block summary{padding:8px 12px;cursor:pointer;color:var(--purple);font-weight:600;display:flex;align-items:center;gap:8px;user-select:none;list-style:none}
+.thinking-block summary::-webkit-details-marker{display:none}
+.thinking-block summary .think-stats{font-weight:400;font-size:0.85em;color:var(--muted);margin-left:auto}
+.thinking-block[open] summary{border-bottom:1px solid rgba(163,113,247,0.15)}
+.think-tool{padding:6px 14px 10px;color:var(--green);font-size:0.85em;font-family:'SF Mono',Consolas,monospace;border-top:1px solid rgba(163,113,247,0.1)}
+.thinking-body{padding:10px 14px;color:var(--muted);line-height:1.55;white-space:pre-wrap;word-break:break-word;font-style:italic;max-height:280px;overflow-y:auto}
 </style>
 </head>
 <body>
 
 <div id="chat">
-  <div id="chat-header"><h2>Agent Chat</h2><span class="badge">deepseek-v4-pro</span><select id="mode-select" onchange="onModeChange()"><option value="general">通用助手</option><option value="dst">DST 助手</option><option value="plan">Plan（占位）</option></select><span style="flex:1"></span><select id="thread-select" onchange="switchThread(this.value)" title="选择对话线程"></select><button class="thread-btn" onclick="renameThread()" title="重命名">✎</button><button class="thread-btn" onclick="deleteThread()" title="删除">🗑</button><button class="thread-btn thread-btn-new" onclick="newThread()" title="新建对话">＋</button><button class="thread-btn" onclick="exportThread()" title="导出当前对话">⬇</button><button class="thread-btn" onclick="importThread()" title="导入对话">⬆</button></div>
+  <div id="chat-header"><h2>Agent Chat</h2><span class="badge">deepseek-v4-pro</span><select id="mode-select" onchange="onModeChange()"><option value="general">通用助手</option><option value="dst">DST 助手</option><option value="plan">Plan（占位）</option></select><select id="reasoning-select" onchange="onReasoningChange()" title="思考模式深度，改后需重启后端生效"><option value="none">不思考</option><option value="high">思考·高</option><option value="max">思考·最大</option></select><span style="flex:1"></span><select id="thread-select" onchange="switchThread(this.value)" title="选择对话线程"></select><button class="thread-btn" onclick="renameThread()" title="重命名">✎</button><button class="thread-btn" onclick="deleteThread()" title="删除">🗑</button><button class="thread-btn thread-btn-new" onclick="newThread()" title="新建对话">＋</button><button class="thread-btn" onclick="exportThread()" title="导出当前对话">⬇</button><button class="thread-btn" onclick="importThread()" title="导入对话">⬆</button></div>
   <div id="messages"><div style="text-align:center;color:var(--muted);padding:40px;font-size:0.9em">输入一个问题试试<br>例如"现在几点？"或"帮我算 123*456"</div></div>
   <div id="input-area"><input id="user-input" placeholder="输入消息..." onkeydown="if(event.key==='Enter')send()"><button id="send-btn" onclick="send()">发送</button></div>
 </div>
@@ -265,21 +277,39 @@ async function loadThreadHistory(id) {
         } else if (role === 'ai') {
           var tc = m.tool_calls || [];
           var content = m.content || '';
-          // content 在先（前导文字），tool_calls 在后（决定调工具）
+          var hasTools = tc.length > 0;
+          var rc = m.reasoning_content || '';
+
+          // ── 步骤（附带 reasoning）──
           if (content) {
             if (pendingHuman) {
-              pendingHuman._ownSteps.push({ id: stepId++, phase: (tc.length > 0 ? 'agent_final' : 'agent_thinking'), node: 'agent', edge: null, title: (tc.length > 0 ? 'LLM 综合工具结果，最终回答' : 'LLM 直接回答'), detail: content.substring(0, 100), aiContent: content });
+              var stepPhase = hasTools ? 'agent_final' : 'agent_thinking';
+              var stepTitle = hasTools ? 'LLM 综合工具结果，继续调用工具' : 'LLM 直接回答';
+              pendingHuman._ownSteps.push({ id: stepId++, phase: stepPhase, node: 'agent', edge: null, title: stepTitle, detail: content.substring(0, 100), aiContent: content, reasoning: rc });
             }
           }
-          if (tc.length > 0) {
+          if (hasTools) {
             for (var t = 0; t < tc.length; t++) {
               var tcObj = tc[t];
               if (pendingHuman) {
-                pendingHuman._ownSteps.push({ id: stepId++, phase: 'agent_thinking', node: 'agent', edge: t === 0 ? null : 'tools→agent', title: 'LLM 调用工具', detail: tcObj.name + '(' + JSON.stringify(tcObj.args || {}) + ')', toolName: tcObj.name, toolArgs: tcObj.args || {} });
+                pendingHuman._ownSteps.push({ id: stepId++, phase: 'agent_thinking', node: 'agent', edge: t === 0 ? null : 'tools→agent', title: 'LLM 调用工具', detail: tcObj.name + '(' + JSON.stringify(tcObj.args || {}) + ')', toolName: tcObj.name, toolArgs: tcObj.args || {}, reasoning: rc });
               }
             }
           }
-          addMsg('ai', content);
+
+          // ── 渲染 ──
+          // 最终思考（无工具）→ 块在气泡前
+          if (rc && !hasTools) {
+            addThinkingBlock(rc, m.usage_metadata, null, null);
+          }
+          // AI 气泡：仅 content 非空 或 非纯工具调用时创建
+          if (content || !hasTools) {
+            addMsg('ai', content);
+          }
+          // 工具思考 → 块在气泡后，含工具调用信息
+          if (rc && hasTools) {
+            addThinkingBlock(rc, m.usage_metadata, tc, null);
+          }
         } else if (role === 'tool') {
           if (pendingHuman) {
             pendingHuman._ownSteps.push({ id: stepId++, phase: 'tool_exec', node: 'tools', edge: 'agent→tools', title: '工具执行完毕', detail: (m.name || 'tool') + ': ' + String(m.content || '').substring(0, 60), toolName: m.name, toolResult: String(m.content || '') });
@@ -407,6 +437,29 @@ function onModeChange() {
   localStorage.setItem(LS_KEY_MODE, currentMode);
 }
 
+// ── 思考模式选择（UI 提示，实际生效需改 .env + 重启后端）──
+const LS_KEY_REASONING = 'agent_ui_reasoning_effort';
+
+function _loadReasoningPersisted() {
+  var v = localStorage.getItem(LS_KEY_REASONING) || 'high';
+  var sel = document.getElementById('reasoning-select');
+  sel.value = v;
+  sel.className = v === 'max' ? 'max-mode' : v === 'high' ? 'high-mode' : '';
+}
+
+function onReasoningChange() {
+  var sel = document.getElementById('reasoning-select');
+  var v = sel.value;
+  localStorage.setItem(LS_KEY_REASONING, v);
+  sel.className = v === 'max' ? 'max-mode' : v === 'high' ? 'high-mode' : '';
+  // 显示暂态提示
+  var toast = document.createElement('div');
+  toast.textContent = '思考模式已设为「' + v + '」— 重启后端后生效';
+  toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--purple);color:#fff;padding:8px 20px;border-radius:8px;font-size:0.85em;z-index:999;transition:opacity .5s';
+  document.body.appendChild(toast);
+  setTimeout(function() { toast.style.opacity = '0'; setTimeout(function() { toast.remove(); }, 500); }, 2500);
+}
+
 // 图例开关 —— persist 到 localStorage 并触发重绘
 function _onToggleSave(key, el) {
   localStorage.setItem(key, String(el.checked));
@@ -415,6 +468,7 @@ function _onToggleSave(key, el) {
 
 // 恢复持久化状态、渲染线程下拉框、加载当前线程历史。
 _loadPersisted();
+_loadReasoningPersisted();
 renderThreadDropdown();
 loadThreadHistory(threadId);
 requestAnimationFrame(() => requestAnimationFrame(() => redraw()));
@@ -643,6 +697,7 @@ async function send() {
   startTime = performance.now();
   toolCount = 0; cycleCount = 0; eventCount = 0; msgCount = 0;
   streamedContent = ''; hadToolCall = false; rawEvents = []; steps = []; selectedStep = -1;
+  renderedReasonings = new Set();  // 去重：防止同一段推理在多次 updates 事件中重复渲染
   resetDebug();
   addMsg('human', text);
   var humanBubble = document.getElementById('messages').lastElementChild;
@@ -679,19 +734,60 @@ function processEvent(event, aiBubble) {
       for (const msg of update.messages) {
         const role = msg.type || '', content = msg.content || '';
         if (role === 'ai') {
-          // LLM 同时产生 content 和 tool_calls 时，content 在先（前导文字），
-          // tool_calls 在后（决定调工具）。步骤按此顺序记录。
+          var hasTools = msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+          var rc = msg.reasoning_content || '';
+
+          // ── 决定本轮是否/如何创建 AI 气泡 ──
+          // 第一轮且 content 为空且只有工具调用 → 隐藏占位气泡
+          // 后续轮次（tools→agent 之后）→ 有 content 才创建新气泡
+          var bubble = aiBubble;
+          if (!hadToolCall) {
+            // 第一轮 agent 响应
+            if (!content && hasTools) {
+              // 没有文字只有工具调用 → 不显示 AI 气泡
+              if (aiBubble._placeholder) {
+                aiBubble.style.display = 'none';
+                aiBubble._placeholder = false;
+              }
+              bubble = null;
+            }
+          } else {
+            // tools→agent 后的轮次 → 有内容才建新气泡
+            if (content) {
+              bubble = addMsg('ai', content);
+              if (aiBubble._humanBubble) bubble._humanBubble = aiBubble._humanBubble;
+              aiBubble = bubble;
+            } else {
+              bubble = null;
+            }
+          }
+
+          // ── 步骤记录（附带 reasoning）──
           if (content) {
-            if (aiBubble._placeholder) { const el = aiBubble.querySelector('.content'); if (el && (!streamedContent || content.length > streamedContent.length)) { el.innerHTML = renderMd(content); aiBubble._placeholder = false; } }
-            addStep(hadToolCall ? 'agent_final' : 'agent_thinking', 'agent', hadToolCall ? 'tools→agent' : null, hadToolCall ? 'LLM 综合工具结果，最终回答' : 'LLM 直接回答', content.substring(0, 100), { aiContent: content });
+            if (bubble && bubble._placeholder) {
+              var el2 = bubble.querySelector('.content');
+              if (el2 && (!streamedContent || content.length > streamedContent.length)) {
+                el2.innerHTML = renderMd(content); bubble._placeholder = false;
+              }
+            }
+            var phaseLabel = hasTools ? 'LLM 综合工具结果，继续调用工具' : (hadToolCall ? 'LLM 综合工具结果，最终回答' : 'LLM 直接回答');
+            addStep(hadToolCall ? 'agent_final' : 'agent_thinking', 'agent', hadToolCall ? 'tools→agent' : null, phaseLabel, content.substring(0, 100), { aiContent: content, reasoning: rc });
           }
-          if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          if (hasTools) {
             hadToolCall = true;
-            for (const tc of msg.tool_calls) {
-            toolCount++; cycleCount++;
-            const arrivedVia = hadToolCall ? 'tools→agent' : null;
-            addStep('agent_thinking', 'agent', arrivedVia, 'LLM 调用工具', `${tc.name}(${JSON.stringify(tc.args)})`, { toolName: tc.name, toolArgs: tc.args });
+            for (var ti = 0; ti < msg.tool_calls.length; ti++) {
+              var tc2 = msg.tool_calls[ti];
+              toolCount++; cycleCount++;
+              addStep('agent_thinking', 'agent', ti === 0 && hadToolCall ? 'tools→agent' : null, 'LLM 调用工具', tc2.name + '(' + JSON.stringify(tc2.args || {}) + ')', { toolName: tc2.name, toolArgs: tc2.args, reasoning: rc });
+            }
           }
+
+          // ── 思考块 ──
+          if (rc && !renderedReasonings.has(rc)) {
+            renderedReasonings.add(rc);
+            // 最终思考（无工具）插在 AI 气泡前，工具思考插在 AI 气泡后
+            var insertBefore = hasTools ? null : (bubble || aiBubble);
+            addThinkingBlock(rc, msg.usage_metadata, hasTools ? msg.tool_calls : null, insertBefore);
           }
         } else if (role === 'tool') {
           const td = document.createElement('div'); td.className = 'msg tool';
@@ -787,6 +883,7 @@ function selectStep(idx) {
     if (t.to) html += `<div class="detail-item"><div class="d-key">到达节点</div><div class="d-val code">${escHtml(t.to)}</div></div>`;
   }
   if (s.toolName) html += `<div class="detail-item"><div class="d-key">调用工具</div><div class="d-val code">${escHtml(s.toolName)}(${escHtml(JSON.stringify(s.toolArgs || {}))})</div></div>`;
+  if (s.reasoning) html += `<div class="detail-item"><div class="d-key">🧠 思考过程</div><div class="d-val text">${escHtml(s.reasoning)}</div></div>`;
   if (s.toolResult) html += `<div class="detail-item"><div class="d-key">工具返回值</div><div class="d-val result">${escHtml(s.toolResult)}</div></div>`;
   if (s.aiContent) html += `<div class="detail-item"><div class="d-key">LLM 输出</div><div class="d-val text">${escHtml(s.aiContent.substring(0, 300))}</div></div>`;
   right.innerHTML = html;
@@ -797,6 +894,35 @@ function selectStep(idx) {
 // UI 辅助
 // ================================================================
 function addMsg(role, text) { const d = document.createElement('div'); d.className = 'msg ' + role; const labels = { human: '👤 YOU', ai: '🤖 Agent', tool: '🔧 Tool' }; const rendered = role === 'ai' ? renderMd(text) : escHtml(text); d.innerHTML = `<div class="label">${labels[role] || role}</div><div class="content">${rendered}</div>`; if (role === 'human') { d.onclick = function() { selectUserMessage(d); }; d.style.cursor = 'pointer'; } document.getElementById('messages').appendChild(d); document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight; return d; }
+function addThinkingBlock(reasoning, usageMeta, toolCalls, insertBeforeEl) {
+  if (!reasoning || reasoning.length === 0) return;
+  var chars = reasoning.length;
+  var reasoningTokens = 0;
+  if (usageMeta && usageMeta.output_token_details && typeof usageMeta.output_token_details.reasoning === 'number') {
+    reasoningTokens = usageMeta.output_token_details.reasoning;
+  }
+  var tokenDisplay = reasoningTokens > 0 ? reasoningTokens + ' tokens' : '~' + Math.round(chars / 2) + ' tokens';
+  var hasTools = toolCalls && toolCalls.length > 0;
+  var title = hasTools ? '🧠 思考——工具' : '🧠 思考';
+  var toolHtml = '';
+  if (hasTools) {
+    for (var i = 0; i < toolCalls.length; i++) {
+      toolHtml += '<div class="think-tool">🔧 ' + escHtml(toolCalls[i].name) + '(' + escHtml(JSON.stringify(toolCalls[i].args || {})) + ')</div>';
+    }
+  }
+  var details = document.createElement('details');
+  details.className = 'thinking-block';
+  details.innerHTML =
+    '<summary>' + title + '<span class="think-stats">' + chars + '字 · ' + tokenDisplay + '</span></summary>' +
+    '<div class="thinking-body">' + escHtml(reasoning) + '</div>' +
+    toolHtml;
+  if (insertBeforeEl && insertBeforeEl.parentNode) {
+    insertBeforeEl.parentNode.insertBefore(details, insertBeforeEl);
+  } else {
+    document.getElementById('messages').appendChild(details);
+  }
+  document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+}
 
 // ── 用户气泡点击：用该消息的步骤替换右侧时间线 ──
 function selectUserMessage(bubble) {

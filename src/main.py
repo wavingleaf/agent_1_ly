@@ -41,116 +41,15 @@ from .agent import graph as graph_mod
 
 
 # ============================================================================
-# 消息序列化辅助 —— 把 LangChain 消息对象转为前端可解析的纯 dict
+# 消息序列化辅助 —— 已提取到 src/utils/serialization_ly.py 共享模块
+# 终端测试（test_demo.py / pytest）和 FastAPI 共用同一套序列化逻辑，
+# 确保浏览器导出和终端导出的 JSON 格式一致。
 # ============================================================================
 
-def _msg_to_dict(msg) -> dict:
-    """
-    将任意 LangChain 消息对象转为 JSON-safe 的 dict。
-
-    json.dumps 的 default=str 会把 AIMessage 转成类似
-    "content='你好' additional_kwargs={} ..." 的字符串，
-    前端无法从中提取 type/content/tool_calls 字段。
-    这个函数手动提取关键字段，确保前端拿到结构化数据。
-    """
-    d = {"type": getattr(msg, "type", "unknown")}
-
-    # 文本内容
-    content = getattr(msg, "content", "")
-    if isinstance(content, list):
-        # Anthropic/某些模型返回 content blocks 列表
-        d["content"] = "".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
-        )
-    else:
-        d["content"] = str(content) if content else ""
-
-    # 工具调用（AIMessage 上）
-    tool_calls = getattr(msg, "tool_calls", None)
-    if tool_calls:
-        d["tool_calls"] = [
-            {
-                "name": tc.get("name", ""),
-                "args": tc.get("args", {}),
-            }
-            for tc in tool_calls
-        ]
-
-    # 工具名（ToolMessage 上）
-    name = getattr(msg, "name", None)
-    if name:
-        d["name"] = name
-
-    return d
-
-
-def _serialize_event(event) -> str:
-    """
-    将 LangGraph astream 产出的 event 转为 JSON 字符串。
-
-    两种 event 格式：
-    1. (mode, payload) 元组 — stream_mode 为列表时（如 ['updates','messages']）
-       - 'updates' mode: payload = {节点名: {messages: [AIMessage, ...]}}
-       - 'messages' mode: payload = (AIMessageChunk, metadata)
-    2. 裸 dict — stream_mode 为单字符串时（如 'updates'）
-       event = {节点名: {messages: [AIMessage, ...]}}
-    """
-    # 检测事件格式
-    if isinstance(event, tuple) and len(event) >= 2:
-        mode, payload = event[0], event[1]
-
-        if mode == "updates" and isinstance(payload, dict):
-            # payload 中每个节点更新里的 messages 列表需要转 dict
-            clean_payload = {}
-            for node_name, update in payload.items():
-                if isinstance(update, dict) and "messages" in update:
-                    clean_update = dict(update)
-                    clean_update["messages"] = [
-                        _msg_to_dict(m) for m in update["messages"]
-                    ]
-                    clean_payload[node_name] = clean_update
-                else:
-                    clean_payload[node_name] = update
-            return json.dumps([mode, clean_payload], ensure_ascii=False)
-
-        elif mode == "messages" and isinstance(payload, tuple) and len(payload) >= 1:
-            # payload = (AIMessageChunk, metadata_dict)
-            msg, metadata = payload[0], payload[1] if len(payload) > 1 else {}
-            clean_msg = _msg_to_dict(msg)
-            return json.dumps([mode, [clean_msg, metadata]], ensure_ascii=False)
-
-        else:
-            # 其他 tuple 格式 —— 逐个尝试转换
-            return json.dumps([mode, _clean_any(payload)], ensure_ascii=False)
-
-    elif isinstance(event, dict):
-        # 单 stream_mode 字符串时的裸 dict
-        clean = {}
-        for node_name, update in event.items():
-            if isinstance(update, dict) and "messages" in update:
-                clean_update = dict(update)
-                clean_update["messages"] = [
-                    _msg_to_dict(m) for m in update["messages"]
-                ]
-                clean[node_name] = clean_update
-            else:
-                clean[node_name] = update
-        return json.dumps(clean, ensure_ascii=False)
-
-    else:
-        return json.dumps(event, default=str, ensure_ascii=False)
-
-
-def _clean_any(obj):
-    """递归清理 dict/list 中的 LangChain 消息对象"""
-    if hasattr(obj, "type") and hasattr(obj, "content"):
-        return _msg_to_dict(obj)
-    if isinstance(obj, dict):
-        return {k: _clean_any(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_clean_any(v) for v in obj]
-    return obj
+from .utils.serialization_ly import (
+    msg_to_dict as _msg_to_dict,
+    serialize_event as _serialize_event,
+)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -297,7 +196,13 @@ async def import_thread(req: ImportRequest):
             rebuilt.append(HumanMessage(content=content))
         elif mtype == "ai":
             tool_calls = m.get("tool_calls")
-            msg = AIMessage(content=content)
+            reasoning = m.get("reasoning_content")
+            # 导入时需保留 reasoning_content —— 它在 additional_kwargs 中，
+            # 否则后续工具调用回合会丢失思考链，前端也无法展示思考过程。
+            additional_kwargs = {}
+            if reasoning:
+                additional_kwargs["reasoning_content"] = reasoning
+            msg = AIMessage(content=content, additional_kwargs=additional_kwargs)
             if tool_calls:
                 # tool_calls 在 dict 中不带 id，还原时需要重新分配以便 ToolMessage 关联
                 normalized = []

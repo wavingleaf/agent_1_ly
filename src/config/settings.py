@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # 为空则直连搜索（可能不可用）。
     DDG_PROXY: str = ""
 
+    # --- 思考模式配置 ---
+    # DeepSeek V4 支持三个推理档位：none（跳过推理链）/ high（开启）/ max（最强推理）
+    # 仅在使用 ChatDeepSeek 适配器时生效。
+    # none → 不开启思考模式（最快、最省 token）
+    # high → 开启推理链（推荐，适合工具调用场景）
+    # max  → 最深推理（token 消耗最大，仅用于极复杂任务）
+    REASONING_EFFORT: str = "none"
+
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",

@@ -1,5 +1,6 @@
 langchain>=1.0.0
 langchain-openai
+langchain-deepseek>=1.1.0
 langchain-community
 langgraph>=0.2.70
 langgraph-checkpoint-sqlite

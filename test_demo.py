@@ -278,10 +278,86 @@ print("""
 info("验证方式", "启动服务后关闭标签页，观察终端日志")
 
 # ═══════════════════════════════════════════════════════════════
+# 8. 对话导出 —— 终端测试生成完整的对话历史 JSON
+# ═══════════════════════════════════════════════════════════════
+
+hdr("8. 对话导出 — 生成终端测试对话记录 JSON")
+
+import json as _json
+from pathlib import Path as _Path
+from src.utils.serialization_ly import messages_to_export
+
+# 导出目录
+_EXPORT_DIR = _Path(__file__).resolve().parent / "文档" / "测试记录" / "终端对话导出"
+_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── 8a: DST 模式完整 ReAct 对话（含工具调用）──
+print("\n  >>> DST 模式：'beefalo 的驯化度组件文件叫什么？列出该文件前30行'\n")
+
+_export_config = {"configurable": {"thread_id": "export-dst-demo", "mode": "dst"}}
+result_export = graph.invoke(
+    {"messages": [{"role": "user", "content": "beefalo 的驯化度组件文件叫什么？列出该文件前30行"}]},
+    config=_export_config,
+)
+
+# 打印消息摘要
+for i, msg in enumerate(result_export["messages"]):
+    role = getattr(msg, "type", "unknown")
+    content = str(msg.content)[:150]
+    print(f"  [{i}] {role}: {content}")
+    if hasattr(msg, "tool_calls") and msg.tool_calls:
+        for tc in msg.tool_calls:
+            print(f"       🔧 {tc['name']}({tc.get('args', {})})")
+
+# 导出 JSON
+export_data = messages_to_export(result_export["messages"], thread_id="export-dst-demo")
+export_path = _EXPORT_DIR / f"dst-demo-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+export_path.write_text(_json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8")
+ok(f"DST 模式对话已导出 → {export_path}（{export_data['message_count']} 条消息）")
+
+# ── 8b: 多轮记忆对话导出 ──
+# 复用 section 5 的 thread_id "demo-mem"，从 checkpointer 读取完整历史
+print(f"\n  >>> 导出多轮记忆对话（thread_id=demo-mem）\n")
+
+# graph.aget_state() 是异步的，这里用同步版 graph.get_state()
+state_mem = graph.get_state({"configurable": {"thread_id": "demo-mem"}})
+if state_mem and state_mem.values:
+    msgs_mem = state_mem.values.get("messages", [])
+    export_mem = messages_to_export(msgs_mem, thread_id="demo-mem")
+    export_mem_path = _EXPORT_DIR / f"multi-turn-memory-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    export_mem_path.write_text(_json.dumps(export_mem, ensure_ascii=False, indent=2), encoding="utf-8")
+    ok(f"多轮记忆对话已导出 → {export_mem_path}（{export_mem['message_count']} 条消息）")
+else:
+    info("多轮记忆", "无 checkpoint 数据（MemorySaver 在脚本中不跨 graph 实例持久化，这是预期行为）")
+
+# ── 8c: 格式对照 —— 终端导出 vs 浏览器导出 ──
+print(f"""
+  终端导出的 JSON 格式与浏览器 GET /chat/export/{{thread_id}} 完全一致：
+
+  {{
+    "version": "0.3.0",
+    "exported_at": "2026-07-07T...",
+    "thread_id": "export-dst-demo",
+    "message_count": {export_data['message_count']},
+    "messages": [
+      {{"type": "human", "content": "beefalo 的驯化度..."}},
+      {{"type": "ai", "content": "", "tool_calls": [{{"name": "grep", "args": {{...}}}}]}},
+      {{"type": "tool", "name": "grep", "content": "📂 ..."}},
+      {{"type": "ai", "content": "beefalo 的驯化度组件是..."}}
+    ]
+  }}
+
+  终端测试的优势：
+  - 不需要启动 FastAPI 服务
+  - 不需要浏览器手动操作
+  - 可脚本化批量导出、用于回归对比（如 P1-1 docstring 互斥化前后）
+""")
+
+# ═══════════════════════════════════════════════════════════════
 # 总结
 # ═══════════════════════════════════════════════════════════════
 
 print(f"\n{'█' * 60}")
 print(f"  全部 demo 验证完成 — {datetime.now().strftime('%H:%M:%S')}")
-print(f"  覆盖：grep工具 / Agent调grep / 多轮记忆 / 工具调用 / SSE断连说明")
+print(f"  覆盖：grep工具 / Agent调grep / 多轮记忆 / 工具调用 / SSE断连说明 / 对话导出")
 print(f"{'█' * 60}\n")

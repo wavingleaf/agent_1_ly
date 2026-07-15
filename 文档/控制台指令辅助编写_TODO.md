@@ -29,6 +29,12 @@ metadata:
 | 13 | web_search DDG_PROXY 代理 + 指数退避重试 | 2026-07-06 | [src/tools/web_search_ly.py](../src/tools/web_search_ly.py) |
 | 14 | AI 气泡实时渲染修复（_placeholder 置位时机） | 2026-07-06 | [debug_ui.html](../debug_ui.html) |
 | 15 | 对话导出/导入（单线程 JSON 文件） | 2026-07-06 | [src/main.py](../src/main.py), [debug_ui.html](../debug_ui.html) |
+| 16 | `msg_to_dict` 提取到共享模块（终端+浏览器共用序列化） | 2026-07-15 | [src/utils/serialization_ly.py](../src/utils/serialization_ly.py) |
+| 17 | ChatOpenAI → ChatDeepSeek 适配器切换 | 2026-07-15 | [src/agent/graph.py](../src/agent/graph.py) |
+| 18 | 思考模式（reasoning_effort=high）+ 后端序列化/导入 | 2026-07-15 | [graph.py](../src/agent/graph.py), [settings.py](../src/config/settings.py), [main.py](../src/main.py), [serialization_ly.py](../src/utils/serialization_ly.py) |
+| 19 | 前端思考块（折叠卡片+字数/token统计+工具签名） | 2026-07-16 | [debug_ui.html](../debug_ui.html) |
+| 20 | SSE 实时流多轮 agent→tools 循环独立气泡 + 隐藏空气泡 | 2026-07-16 | [debug_ui.html](../debug_ui.html) |
+| 21 | 前端右侧面板步骤细节显示思考过程 | 2026-07-16 | [debug_ui.html](../debug_ui.html) |
 
 ---
 
@@ -134,6 +140,14 @@ metadata:
 - **已解决**：DDG_PROXY 代理链路已打通（2026-07-06），不再有连接超时问题
 - **剩余问题**：DuckDuckGo 对长查询匹配差、搜索结果噪音大（不是代码 bug，是搜索引擎局限）
 - 如果后续质量无法满足需求，备选 Brave Search（需免费 API key）
+
+#### 6. SSE 多轮工具调用打字机效果
+
+- **问题**：实时流第一轮 agent 响应有打字机效果（`messages` mode → token chunk → 占位气泡），但第二轮起（tools→agent 后）`updates` mode 到达完整 content 后直接渲染，没有打字机效果
+- **根因**：`messages` mode 的 token chunk 不带"第几轮"标识，`streamedContent` 始终指向第一轮占位气泡。要实现多轮打字机需要重构 SSE 事件处理：`updates` 检测新轮次 → 创建新占位+重置 `streamedContent` → 等待后续 `messages` chunk 填充。但 `updates` 和 `messages` 的到达顺序不保证
+- **影响**：第二轮及以后的 content 通常较短（如"还需要查 wilson_attack"），打字机效果的视觉价值有限。刷新后历史加载的排版是正确的
+- **改动量**：~30 行，但涉及 SSE 事件处理核心结构重构
+- **时机**：P3，等 SSE 管道更稳定后再动
 
 ---
 
